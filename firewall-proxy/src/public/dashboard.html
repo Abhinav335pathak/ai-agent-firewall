@@ -54,7 +54,7 @@
   <span class="pill"><span class="dot" id="wsDot"></span><span id="wsText">connecting...</span></span>
   <span class="pill">policy <b id="policyVer">-</b></span>
   <span id="toast"></span>
-  <label>Admin token <input id="token" type="password" placeholder="needed to approve / reject"></label>
+  <button id="connect">Connect</button><label>Reviewer token <input id="token" type="password" placeholder="needed to approve / reject"></label>
 </header>
 
 <main>
@@ -87,11 +87,9 @@
     return e;
   }
 
-  // ---- admin token (kept in this browser only)
+  // Credentials stay only in this page's memory.
   const tokenInput = $('token');
-  try { tokenInput.value = localStorage.getItem('adminToken') || ''; } catch (e) { /* storage blocked */ }
-  tokenInput.addEventListener('change', () => { try { localStorage.setItem('adminToken', tokenInput.value); } catch (e) {} });
-
+  const headers = () => ({ authorization: 'Bearer ' + tokenInput.value });
   // ---- company state
   function table(cols, rows) {
     const t = el('table');
@@ -108,8 +106,11 @@
   function put(id, node) { const box = $(id); box.replaceChildren(node); }
 
   async function refreshCompany() {
+    if (!tokenInput.value) return;
     try {
-      const d = await (await fetch('/company-status.json', { cache: 'no-store' })).json();
+      const response = await fetch('/company-status.json', { cache: 'no-store', headers: headers() });
+      if (!response.ok) throw new Error('Reviewer authentication required');
+      const d = await response.json();
       if (d.error) throw new Error(d.error);
       put('customers', d.customers === null
         ? el('div', 'destroyed', 'TABLE "customers" DOES NOT EXIST - production data destroyed')
@@ -173,11 +174,17 @@
   function toast(msg) { $('toast').textContent = msg; clearTimeout(toastTimer); toastTimer = setTimeout(() => { $('toast').textContent = ''; }, 5000); }
 
   async function refreshPolicy() {
-    try { $('policyVer').textContent = (await (await fetch('/policy')).json()).version; } catch (e) { /* ignore */ }
+    try { $('policyVer').textContent = (await (await fetch('/policy', { headers: headers() })).json()).version; } catch (e) { /* ignore */ }
   }
 
   // ---- realtime
-  const socket = io();
+  const socket = io({ autoConnect: false, auth: (reply) => reply({ token: tokenInput.value }) });
+  $('connect').onclick = () => {
+    socket.disconnect(); pendingEntries.clear(); renderPending();
+    $('feed').replaceChildren(el('div', 'empty', 'Connecting with reviewer identity...'));
+    socket.connect(); refreshCompany(); refreshPolicy();
+  };
+  socket.on('connect_error', () => { $('wsText').textContent = 'Reviewer authentication required'; });
   socket.on('connect', () => { $('wsDot').className = 'dot on'; $('wsText').textContent = 'live'; });
   socket.on('disconnect', () => { $('wsDot').className = 'dot off'; $('wsText').textContent = 'disconnected'; });
   socket.on('history', (list) => { $('feed').replaceChildren(); [...list].reverse().forEach(addFeed); if (!list.length) $('feed').appendChild(el('div', 'empty', 'No activity yet.')); });
@@ -187,7 +194,7 @@
   socket.on('feed_reset', () => { pendingEntries.clear(); renderPending(); $('feed').replaceChildren(el('div', 'empty', 'Feed cleared.')); refreshCompany(); });
   socket.on('policy_reloaded', (s) => { $('policyVer').textContent = s.version; toast('Policy hot-reloaded -> ' + s.version); });
 
-  renderPending(); refreshCompany(); refreshPolicy();
+  renderPending(); $('wsText').textContent = 'Enter reviewer token and connect';
   setInterval(refreshCompany, 2000);
 </script>
 </body>

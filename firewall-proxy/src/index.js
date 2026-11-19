@@ -15,6 +15,7 @@
 const http = require('http');
 const path = require('path');
 const crypto = require('crypto');
+const fs = require('fs');
 const express = require('express');
 const cors = require('cors');
 const { Server } = require('socket.io');
@@ -81,7 +82,7 @@ async function main() {
 
   const app = express();
   const server = http.createServer(app);
-  const io = new Server(server, { cors: { origin: config.corsOrigin } });
+  const io = new Server(server, { cors: { origin: false } });
 
   const engine = new PolicyEngine(config.policyFile, {
     onReload: (s) => {
@@ -94,6 +95,16 @@ async function main() {
   setInterval(() => engine.checkAndReload(), 2000).unref();
 
   app.disable('x-powered-by');
+  const dashboard = fs.readFileSync(path.join(__dirname, 'public/dashboard.html'), 'utf8');
+  const inlineScript = dashboard.match(/<script>([\s\S]*?)<\/script>/)?.[1] || '';
+  const scriptHash = crypto.createHash('sha256').update(inlineScript).digest('base64');
+  app.use((req, res, next) => {
+    res.set('Content-Security-Policy', `default-src 'self'; script-src 'self' 'sha256-${scriptHash}'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://generativelanguage.googleapis.com; object-src 'none'; base-uri 'none'; frame-ancestors 'none'`);
+    res.set('X-Content-Type-Options', 'nosniff');
+    res.set('Referrer-Policy', 'no-referrer');
+    res.set('Cache-Control', 'no-store');
+    next();
+  });
   app.use(cors({ origin: false }));
   app.use(express.json({ limit: '10kb' }));
   const requireAdmin = access.requireOperator;
@@ -387,6 +398,7 @@ async function main() {
     res.status(r.ok ? 200 : 502).json(r.ok ? r.data : { error: r.data.error || 'company api unreachable' });
   }));
 
+  app.use('/assets', express.static(path.join(__dirname, 'public'), { index: false }));
   app.get('/company-status', (req, res) => res.sendFile(path.join(__dirname, 'public', 'dashboard.html')));
   app.get('/agent-console', (req, res) => res.sendFile(path.join(__dirname, 'public', 'agent-console.html')));
   app.get('/', (req, res) => res.redirect('/company-status'));

@@ -206,7 +206,7 @@ jobs:
         run: |
           SSH="ssh -i $HOME/.ssh/deploy_key ubuntu@$EC2_HOST"
           $SSH 'cloud-init status --wait >/dev/null 2>&1 || true; mkdir -p ~/app'
-          tar czf - docker-compose.yml docker-compose.monitoring.yml .env.example nginx policy monitoring scripts \
+          tar czf - docker-compose.yml docker-compose.monitoring.yml docker-compose.https.yml .env.example nginx caddy policy monitoring scripts \
             | $SSH 'tar xzf - -C ~/app'
 
       - name: Pull images and restart the stack (auto-rollback on failure)
@@ -215,4 +215,7 @@ jobs:
             "cd ~/app && DOCKERHUB_USERNAME='$DOCKERHUB_USERNAME' IMAGE_TAG='$IMAGE_TAG' bash scripts/deploy-remote.sh"
 
       - name: Smoke test the live server
-        run: ./scripts/smoke-test.sh "http://$EC2_HOST"
+        run: |
+          # Application secrets stay on the server rather than crossing CI logs.
+          ssh -i "$HOME/.ssh/deploy_key" "ubuntu@$EC2_HOST" \
+            'cd ~/app && bash scripts/smoke-test.sh'

@@ -8,7 +8,8 @@
 # delete_prod_db (which must be blocked), so they are safe to run on the production demo box.
 set -uo pipefail
 
-BASE="${1:-http://localhost}"
+DEFAULT_PORT="$(sed -n 's/^HTTP_PORT=//p' .env 2>/dev/null || true)"
+BASE="${1:-http://127.0.0.1:${DEFAULT_PORT:-80}}"
 BASE="${BASE%/}"
 MODE="${2:-}"
 HOST="$(echo "$BASE" | sed -E 's#^https?://##; s#[:/].*$##')"
@@ -48,7 +49,7 @@ if echo "$status_json" | grep -q 'Alice Sharma'; then pass "production customers
 
 # 4. the data tier is not exposed to the outside world
 for port in 3000 4000 5432; do
-  if timeout 3 bash -c "exec 3<>/dev/tcp/$HOST/$port" 2>/dev/null; then
+  if command -v timeout >/dev/null && timeout 3 bash -c "exec 3<>/dev/tcp/$HOST/$port" 2>/dev/null; then
     fail "port $port is reachable from outside - it must be closed"
   else
     pass "port $port is not exposed"

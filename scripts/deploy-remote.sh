@@ -16,6 +16,14 @@ set_env() { # set_env KEY VALUE
   if grep -q "^$1=" .env; then sed -i "s|^$1=.*|$1=$2|" .env; else echo "$1=$2" >> .env; fi
 }
 
+DOMAIN="$(sed -n 's/^APP_DOMAIN=//p' .env)"
+if [ -n "$DOMAIN" ]; then
+  [[ "$DOMAIN" =~ ^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$ ]] || { echo "Invalid APP_DOMAIN" >&2; exit 1; }
+  set_env HTTP_BIND 127.0.0.1
+  set_env HTTP_PORT 8080
+  set_env COMPOSE_FILE docker-compose.yml:docker-compose.https.yml
+fi
+
 cp .env .env.previous
 set_env DOCKERHUB_USERNAME "$DOCKERHUB_USERNAME"
 set_env IMAGE_TAG "$IMAGE_TAG"

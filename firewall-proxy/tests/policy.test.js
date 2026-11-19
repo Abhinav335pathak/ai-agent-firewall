@@ -31,6 +31,20 @@ test('read_logs is allowed automatically', () => {
   assert.equal(new PolicyEngine(REAL_POLICY).evaluate('read_logs').decision, 'ALLOW');
 });
 
+test('SQL reads are allowed, writes need approval, destructive SQL is blocked', () => {
+  const engine = new PolicyEngine(REAL_POLICY);
+  for (const [action, risk, decision] of [
+    ['sql_read', 'LOW', 'ALLOW'],
+    ['sql_write', 'HIGH', 'REQUIRE_APPROVAL'],
+    ['sql_destructive', 'CRITICAL', 'BLOCK'],
+  ]) {
+    const verdict = engine.evaluate(action);
+    assert.equal(verdict.risk, risk);
+    assert.equal(verdict.decision, decision);
+    assert.equal(verdict.matched, true);
+  }
+});
+
 test('spin_up_dev_vm and change_iam_permissions need a human', () => {
   const e = new PolicyEngine(REAL_POLICY);
   assert.equal(e.evaluate('spin_up_dev_vm').decision, 'REQUIRE_APPROVAL');

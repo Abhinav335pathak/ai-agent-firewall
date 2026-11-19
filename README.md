@@ -70,12 +70,13 @@ ai-agent-firewall/
 ├── .github/workflows/ci-cd.yml   # the whole pipeline
 ├── policy/policies.yaml          # THE RULEBOOK (policy-as-code, hot-reloaded)
 ├── firewall-proxy/               # the brain
-│   ├── src/{index,policyEngine,audit,metrics}.js
+│   ├── src/{index,policyEngine,sqlPolicy,audit,metrics}.js
 │   ├── src/public/dashboard.html # live console (company DB + feed + approve buttons)
 │   ├── tests/policy.test.js      # security regression tests (run in CI)
 │   └── scripts/validate-policy.js
 ├── company-api-server/           # fake company backend + seed.sql
 ├── agent-simulator/simulate.js   # the scripted agent
+├── agent-simulator/gemini-sql-agent.js # interactive Gemini text-to-SQL agent
 ├── nginx/default.conf
 ├── monitoring/                   # optional Prometheus + Grafana
 ├── terraform/                    # AWS EC2 + security group + Elastic IP
@@ -132,13 +133,80 @@ make demo-auto     # hands-free: a robot reviewer approves the VM, rejects IAM, 
 make isolation     # proves the agent container cannot reach the company API or either database
 make smoke         # black-box checks (health, enforcement, data intact, ports closed)
 make reset         # restore the company DB + clear feed/audit (use before presenting)
-make test          # policy validation + 14 unit tests
+make test          # policy validation + firewall, SQL execution and Gemini-agent unit tests
 make logs          # follow logs      |  make down   # stop   |   make clean   # stop + delete data
 ```
 
 > **Generate lockfiles once** (recommended, makes builds reproducible). In each of `firewall-proxy/` and
 > `company-api-server/` run `npm install`, then commit the new `package-lock.json`. CI and Docker use
 > `npm ci` automatically when a lockfile exists.
+
+### Interactive Gemini text-to-SQL demo
+
+Start the local stack with `make up`, then open `http://localhost/company-status`.
+In another terminal, provide your own Gemini API key and start the agent:
+
+```bash
+export GEMINI_API_KEY='your-api-key'
+node agent-simulator/gemini-sql-agent.js --url http://localhost
+```
+
+The default model is `gemini-3.8-flash`; override it with `--model <model-id>` or
+`GEMINI_MODEL`. `--url` overrides `FIREWALL_URL`; the default firewall URL is
+`http://localhost`. The API key is sent to Google in a header and is never sent
+to the firewall. Keep it out of source control.
+
+Temporary Gemini HTTP/network failures get at most two attempts per model, with
+a short wait before retrying. If needed, the default fallback order is
+`gemini-3.5-flash-lite`, then `gemini-3.1-flash-lite`. Set
+`GEMINI_FALLBACK_MODELS` to a comma-separated list to override it, or an empty
+string to disable failover. Authentication, billing and malformed-request errors
+stop immediately. A missing model (404) moves directly to the next candidate.
+The successful model is reused; when switching models, prior SQL/results are
+carried as text rather than replaying model-specific thought signatures. Only
+Gemini calls retry: SQL execution is never automatically retried. See Google's
+[retry guidance](https://ai.google.dev/gemini-api/docs/troubleshooting#retry-strategy)
+and [supported models](https://ai.google.dev/gemini-api/docs/models).
+
+Try these prompts:
+
+* **"List the customer names and plans."** Gemini submits a SELECT; the firewall
+  parses its SQL structure (AST), classifies it as `sql_read`, and allows it.
+* **"Change Alice Sharma's plan to Pro."** An UPDATE becomes `sql_write` and waits
+  for an authenticated human decision. In the existing dashboard enter the local
+  admin token `demo-admin-token`, review the complete SQL, then approve or reject. Without a decision, the
+  write times out and does not execute.
+* **"Drop the customers table."** The firewall classifies it as `sql_destructive`
+  and blocks it before it reaches PostgreSQL.
+
+This is deliberately a limited demo SQL interface. Only one SELECT, INSERT or
+UPDATE is supported, against `customers`, `cloud_resources` or `iam_roles` in
+the public schema. Safe functions are limited to COUNT, SUM, AVG, MIN, MAX,
+LOWER, UPPER, LENGTH, COALESCE, NULLIF, ROUND and ABS. CTEs, SELECT INTO,
+destructive statements, arbitrary functions and multiple statements fail closed.
+The agent cannot bypass classification by sending its own `sql_read` label.
+
+The private backend executes reads in a read-only transaction and writes only
+after firewall approval. Extended query protocol rejects multiple commands;
+statement/lock timeouts bound database work. Responses include at most 100 rows.
+SQL and the decision are recorded in the existing audit feed. Gemini's final
+explanation uses the actual firewall response, with tools disabled during that
+explanation so it cannot issue another write.
+
+`make test` uses mocked Gemini responses and needs no API key. CI additionally
+runs the real-PostgreSQL SQL smoke test. To run that test yourself, use **only a
+disposable test database**: it inserts one customer and exercises approval,
+rejection, timeout, blocking and audit checks.
+
+```bash
+ADMIN_TOKEN=demo-admin-token ALLOW_SQL_TEST_WRITES=true \
+  node scripts/sql-smoke-test.js http://localhost
+```
+
+The existing four scripted scenarios still run with `make demo-auto`.
+The CLI uses Google's [generateContent REST API](https://ai.google.dev/api/generate-content).
+An actual Gemini account call requires your API key and available model quota;
+mock tests do not establish live Gemini acceptance.
 
 ---
 

@@ -5,5 +5,9 @@
   "main": "simulate.js",
   "private": true,
   "engines": { "node": ">=20" },
-  "scripts": { "start": "node simulate.js" }
+  "scripts": {
+    "start": "node simulate.js",
+    "sql": "node gemini-sql-agent.js",
+    "test": "node --test"
+  }
 }

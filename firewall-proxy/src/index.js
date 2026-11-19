@@ -22,6 +22,7 @@ const { Server } = require('socket.io');
 const { PolicyEngine } = require('./policyEngine');
 const { AuditStore } = require('./audit');
 const { Metrics } = require('./metrics');
+const { classifySqlAction } = require('./sqlPolicy');
 
 const config = {
   port: Number(process.env.PORT || 3000),
@@ -41,6 +42,8 @@ const EXECUTORS = {
   spin_up_dev_vm: { method: 'POST', path: '/vm/spin-up' },
   change_iam_permissions: { method: 'POST', path: '/iam/elevate' },
   delete_prod_db: { method: 'DELETE', path: '/db/customers' },
+  sql_read: { method: 'POST', path: '/sql/execute' },
+  sql_write: { method: 'POST', path: '/sql/execute' },
 };
 
 const ACTION_RE = /^[a-z][a-z0-9_]{0,63}$/;
@@ -117,7 +120,10 @@ async function main() {
     if (!ex) {
       return { ok: false, status: 422, data: { error: `no executor registered for "${action}"` } };
     }
-    return companyRequest(ex.method, ex.path, { target, payload });
+    return companyRequest(ex.method, ex.path, {
+      target, payload,
+      ...(action.startsWith('sql_') ? { sqlAction: action } : {}),
+    });
   }
 
   // ------------------------------------------------ human-in-the-loop queue
@@ -161,6 +167,7 @@ async function main() {
       decision,
       latencyMs: Number(msSince(base._startNs).toFixed(2)),
       ...extra,
+      ...((base.detail || extra.detail) ? { detail: { ...base.detail, ...extra.detail } } : {}),
     };
     delete entry._startNs;
     metrics.inc('firewall_decisions_total', { decision });
@@ -173,15 +180,19 @@ async function main() {
   app.post('/agent/execute', async (req, res) => {
     const startNs = nowNs();
     const body = req.body && typeof req.body === 'object' ? req.body : {};
-    const action = body.action;
+    const rawAction = body.action;
 
-    if (typeof action !== 'string' || !ACTION_RE.test(action)) {
+    if (typeof rawAction !== 'string' || !ACTION_RE.test(rawAction)) {
       return res.status(400).json({ status: 'INVALID', error: '"action" must be a snake_case string' });
     }
 
     const agent = clip(body.agentId || body.agent || 'DemoAgent-01', 64);
-    const target = clip(body.target, 128);
     const payload = body.payload && typeof body.payload === 'object' && !Array.isArray(body.payload) ? body.payload : {};
+    // Reclassify even caller-supplied sql_read/sql_write labels; the agent
+    // cannot grant itself a lower-risk action by changing the request label.
+    const isSql = ['execute_sql', 'sql_read', 'sql_write', 'sql_destructive'].includes(rawAction);
+    const action = isSql ? classifySqlAction(payload.sql) : rawAction;
+    const target = isSql ? clip(payload.sql, 128) : clip(body.target, 128);
 
     // 1) INTERCEPT + 2) CLASSIFY + 3) CHECK POLICY
     const evalStart = nowNs();
@@ -199,6 +210,7 @@ async function main() {
       policyDecision: verdict.decision,
       policyEvalMs: Number((evalSeconds * 1000).toFixed(3)),
       _startNs: startNs,
+      ...(isSql ? { detail: { sql: typeof payload.sql === 'string' ? payload.sql : null } } : {}),
     };
 
     // 4) DECIDE + ENFORCE
@@ -212,6 +224,7 @@ async function main() {
       return res.json({
         status: label === 'ALLOWED' ? 'ALLOWED' : 'APPROVED',
         id: base.id,
+        ...(isSql ? { classifiedAction: action } : {}),
         risk: base.risk,
         data: result.data,
       });
@@ -226,6 +239,7 @@ async function main() {
       return res.status(403).json({
         status: 'BLOCKED',
         id: base.id,
+        ...(isSql ? { classifiedAction: action } : {}),
         risk: base.risk,
         reason: `Action "${action}" is blocked by firewall policy (risk ${base.risk})`,
       });
@@ -243,6 +257,7 @@ async function main() {
       decision: 'PENDING_APPROVAL',
       timeoutMs: config.approvalTimeoutMs,
       expiresAt: new Date(Date.now() + config.approvalTimeoutMs).toISOString(),
+      ...(isSql ? { sql: payload.sql } : {}),
     };
 
     res.on('close', () => {

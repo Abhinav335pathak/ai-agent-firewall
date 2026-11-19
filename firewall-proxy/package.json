@@ -4,7 +4,9 @@
   "description": "AI Agent Firewall - policy enforcement proxy with human-in-the-loop approvals",
   "main": "src/index.js",
   "private": true,
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "start": "node src/index.js",
     "test": "node --test",
@@ -14,6 +16,7 @@
     "cors": "^2.8.5",
     "express": "^4.21.0",
     "js-yaml": "^4.1.0",
+    "node-sql-parser": "^5.4.0",
     "pg": "^8.12.0",
     "socket.io": "^4.7.5"
   }

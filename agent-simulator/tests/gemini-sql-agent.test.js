@@ -10,11 +10,11 @@ function fixture({ sql = 'SELECT * FROM customers', status = 200, summaryFails =
   let geminiCalls = 0;
   const modelMessage = { role: 'model', parts: calls || [{ thoughtSignature: 'preserve-me', functionCall: { id: 'call-1', name: 'execute_sql', args: { sql } } }] };
   const verdict = { status: status === 403 ? 'BLOCKED' : 'ALLOWED', classifiedAction: status === 403 ? 'sql_destructive' : 'sql_read', data: { rows: [] } };
-  const turn = createAgent({ apiKey: 'test-key', fetchImpl: async (url, options) => {
+  const turn = createAgent({ apiKey: 'test-key', sleepImpl: async () => {}, fetchImpl: async (url, options) => {
     requests.push({ url, headers: options.headers, body: JSON.parse(options.body) });
     if (url.includes('generativelanguage.googleapis.com')) {
       geminiCalls++;
-      if (geminiFails || (geminiCalls === 2 && summaryFails)) return response({}, 503);
+      if (geminiFails || (summaryFails && JSON.parse(options.body).toolConfig.functionCallingConfig.mode === 'NONE')) return response({}, 503);
       return response({ candidates: [{ content: geminiCalls === 1 ? modelMessage : { role: 'model', parts: [{ text: 'Here is the actual result.' }] } }] });
     }
     if (firewallFails) throw new Error('Firewall unavailable');
@@ -86,4 +86,97 @@ test('firewall connection failures remove the incomplete tool turn', async () =>
   const history = [];
   await assert.rejects(turn('List customers', history), /Firewall unavailable/);
   assert.deepEqual(history, []);
+});
+
+function retryFixture(handler) {
+  const requests = [];
+  const waits = [];
+  let executions = 0;
+  const turn = createAgent({ apiKey: 'test-key', model: 'primary', fallbackModels: ['backup'],
+    sleepImpl: async (ms) => waits.push(ms), fetchImpl: async (url, options) => {
+      const body = JSON.parse(options.body);
+      if (url.includes('/agent/execute')) {
+        executions++;
+        return response({ status: 'ALLOWED', data: { rows: [{ total: 3 }] } });
+      }
+      const model = url.match(/models\/([^:]+):/)[1];
+      const summary = body.toolConfig.functionCallingConfig.mode === 'NONE';
+      requests.push({ model, summary, body });
+      const failure = handler({ model, summary, requests });
+      if (failure instanceof Error) throw failure;
+      if (failure) return failure;
+      return response({ candidates: [{ content: { role: 'model', parts: summary ? [{ text: 'Three customers.' }]
+        : [{ thoughtSignature: `signed-by-${model}`, functionCall: { name: 'execute_sql', args: { sql: 'SELECT COUNT(*) FROM customers' } } }] } }] });
+    },
+  });
+  return { turn, requests, waits, get executions() { return executions; } };
+}
+
+test('429 retries once on the same model and honors bounded Retry-After', async () => {
+  const f = retryFixture(({ requests }) => requests.length === 1
+    ? new Response('{}', { status: 429, headers: { 'retry-after': '2' } }) : null);
+  await f.turn('Count customers', []);
+  assert.deepEqual(f.requests.map((r) => r.model), ['primary', 'primary', 'primary']);
+  assert.deepEqual(f.waits, [2000]);
+  assert.equal(f.executions, 1);
+});
+
+test('503 exhausts two attempts then uses backup for generation and summary', async () => {
+  const f = retryFixture(({ model }) => model === 'primary' ? response({}, 503) : null);
+  await f.turn('Count customers', []);
+  assert.deepEqual(f.requests.map((r) => r.model), ['primary', 'primary', 'backup', 'backup']);
+  assert.deepEqual(f.waits, [800]);
+  assert.equal(f.executions, 1);
+});
+
+for (const status of [400, 401, 402, 403]) {
+  test(`HTTP ${status} stops without retry or fallback`, async () => {
+    const f = retryFixture(() => response({}, status));
+    const history = [];
+    await assert.rejects(f.turn('Count customers', history), new RegExp(`HTTP ${status}`));
+    assert.equal(f.requests.length, 1);
+    assert.equal(f.executions, 0);
+    assert.deepEqual(f.waits, []);
+    assert.deepEqual(history, []);
+  });
+}
+
+test('missing model immediately falls back without a redundant retry', async () => {
+  const f = retryFixture(({ model }) => model === 'primary' ? response({}, 404) : null);
+  await f.turn('Count customers', []);
+  assert.deepEqual(f.requests.map((r) => r.model), ['primary', 'backup', 'backup']);
+  assert.deepEqual(f.waits, []);
+});
+
+test('network failures retry then fall back before SQL execution', async () => {
+  const f = retryFixture(({ model }) => model === 'primary' ? new TypeError('fetch failed') : null);
+  await f.turn('Count customers', []);
+  assert.equal(f.executions, 1);
+  assert.deepEqual(f.waits, [800]);
+});
+
+test('all models failing is bounded and preserves history', async () => {
+  const f = retryFixture(() => response({}, 503));
+  const history = [];
+  await assert.rejects(f.turn('Count customers', history), /HTTP 503 \(backup\)/);
+  assert.equal(f.requests.length, 4);
+  assert.equal(f.executions, 0);
+  assert.deepEqual(f.waits, [800, 800]);
+  assert.deepEqual(history, []);
+});
+
+test('summary failover preserves SQL results without replaying signed tool messages or SQL execution', async () => {
+  const f = retryFixture(({ model, summary }) => model === 'primary' && summary ? response({}, 503) : null);
+  const history = [];
+  const result = await f.turn('Count customers', history);
+  assert.equal(result.text, 'Three customers.');
+  assert.equal(f.executions, 1);
+  const backup = f.requests.find((r) => r.model === 'backup');
+  assert.equal(backup.summary, true);
+  assert.equal(backup.body.toolConfig.functionCallingConfig.mode, 'NONE');
+  assert.equal(JSON.stringify(backup.body.contents).includes('thoughtSignature'), false);
+  assert.match(JSON.stringify(backup.body.contents), /total/);
+  await f.turn('Count again', history);
+  assert.equal(f.requests.at(-1).model, 'backup');
+  assert.equal(f.executions, 2);
 });

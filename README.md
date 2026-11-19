@@ -156,6 +156,18 @@ The default model is `gemini-3.8-flash`; override it with `--model <model-id>` o
 `http://localhost`. The API key is sent to Google in a header and is never sent
 to the firewall. Keep it out of source control.
 
+Temporary Gemini HTTP/network failures get at most two attempts per model, with
+a short wait before retrying. If needed, the default fallback order is
+`gemini-3.5-flash-lite`, then `gemini-3.1-flash-lite`. Set
+`GEMINI_FALLBACK_MODELS` to a comma-separated list to override it, or an empty
+string to disable failover. Authentication, billing and malformed-request errors
+stop immediately. A missing model (404) moves directly to the next candidate.
+The successful model is reused; when switching models, prior SQL/results are
+carried as text rather than replaying model-specific thought signatures. Only
+Gemini calls retry: SQL execution is never automatically retried. See Google's
+[retry guidance](https://ai.google.dev/gemini-api/docs/troubleshooting#retry-strategy)
+and [supported models](https://ai.google.dev/gemini-api/docs/models).
+
 Try these prompts:
 
 * **"List the customer names and plans."** Gemini submits a SELECT; the firewall

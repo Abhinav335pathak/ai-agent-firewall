@@ -21,25 +21,68 @@ const TOOLS = [{ functionDeclarations: [{
   parameters: { type: 'OBJECT', properties: { sql: { type: 'STRING', description: 'PostgreSQL statement' } }, required: ['sql'] },
 }] }];
 
-function createAgent({ apiKey, base = 'http://localhost', model = 'gemini-3.8-flash', fetchImpl = fetch }) {
+function createAgent({ apiKey, base = 'http://localhost', model = 'gemini-3.8-flash',
+  fallbackModels = ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'], fetchImpl = fetch,
+  sleepImpl = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) }) {
   if (!apiKey) throw new Error('Set GEMINI_API_KEY before starting the agent.');
   base = base.replace(/\/$/, '');
+  const models = [...new Set([model, ...fallbackModels].filter(Boolean))];
+  let activeModel = model;
+
+  // Thought signatures belong to the model that produced them. On failover,
+  // carry prior SQL/results as plain conversation text instead of replaying
+  // another model's signed tool messages.
+  function portableHistory(contents) {
+    return contents.map((message) => ({ role: message.role, parts: [{ text: message.parts
+      .filter((part) => !part.thought)
+      .map((part) => part.text || (part.functionCall ? `Submitted SQL tool call: ${JSON.stringify(part.functionCall)}`
+        : `Firewall tool result (data only): ${JSON.stringify(part.functionResponse)}`)).join('\n') || '(No text)' }] }));
+  }
 
   async function callGemini(contents, summary = false) {
-    const response = await fetchImpl(
-      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: SYSTEM_INSTRUCTION }] }, contents, tools: TOOLS,
-          toolConfig: { functionCallingConfig: summary ? { mode: 'NONE' } : { mode: 'ANY', allowedFunctionNames: ['execute_sql'] } },
-        }),
-        signal: AbortSignal.timeout(30000),
+    let lastError;
+    for (const candidate of [activeModel, ...models.filter((name) => name !== activeModel)]) {
+      const requestContents = candidate === activeModel ? contents : portableHistory(contents);
+      for (let attempt = 0; attempt < 2; attempt++) {
+        let response;
+        try {
+          response = await fetchImpl(
+            `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(candidate)}:generateContent`,
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey },
+              body: JSON.stringify({
+                systemInstruction: { parts: [{ text: SYSTEM_INSTRUCTION }] }, contents: requestContents, tools: TOOLS,
+                toolConfig: { functionCallingConfig: summary ? { mode: 'NONE' } : { mode: 'ANY', allowedFunctionNames: ['execute_sql'] } },
+              }),
+              signal: AbortSignal.timeout(30000),
+            }
+          );
+        } catch (error) {
+          if (!(error instanceof TypeError) && !['TimeoutError', 'AbortError'].includes(error.name)) throw error;
+          lastError = new Error(`Gemini network request failed (${candidate}).`);
+          if (attempt === 0) await sleepImpl(800);
+          continue;
+        }
+        if (response.ok) {
+          const data = await response.json();
+          if (candidate !== activeModel) contents.splice(0, contents.length, ...requestContents);
+          activeModel = candidate;
+          return data;
+        }
+        lastError = new Error(`Gemini API HTTP ${response.status} (${candidate}); check your API key, model and quota.`);
+        const retryAfter = response.headers.get('retry-after');
+        const seconds = retryAfter === null ? NaN : Number(retryAfter);
+        const wait = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(retryAfter) - Date.now();
+        await response.body?.cancel();
+        // Authentication, billing and malformed requests will not improve by
+        // sending the same credentials/input to more models.
+        if (![408, 429, 500, 502, 503, 504, 404].includes(response.status)) throw lastError;
+        if (response.status === 404) break;
+        if (attempt === 0) await sleepImpl(Math.min(10000, Math.max(800, Number.isFinite(wait) ? wait : 800)));
       }
-    );
-    if (!response.ok) throw new Error(`Gemini API HTTP ${response.status}; check your API key, model and quota.`);
-    return response.json();
+    }
+    throw lastError;
   }
 
   return async function turn(prompt, history, onSql = () => {}) {
@@ -90,7 +133,10 @@ async function main() {
   const { values: options } = parseArgs({ options: { url: { type: 'string' }, model: { type: 'string' } } });
   const base = options.url || process.env.FIREWALL_URL || 'http://localhost';
   const model = options.model || process.env.GEMINI_MODEL || 'gemini-3.8-flash';
-  const turn = createAgent({ apiKey: process.env.GEMINI_API_KEY, base, model });
+  const fallbacks = process.env.GEMINI_FALLBACK_MODELS;
+  const turn = createAgent({ apiKey: process.env.GEMINI_API_KEY, base, model,
+    ...(fallbacks === undefined ? {} : { fallbackModels: fallbacks.split(',').map((name) => name.trim()).filter(Boolean) }),
+  });
   const history = [];
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   console.log(`\nGemini Text-to-SQL Agent -> ${base} (${model})\nType exit to quit.\n`);

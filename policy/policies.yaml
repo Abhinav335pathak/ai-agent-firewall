@@ -1,0 +1,42 @@
+# =============================================================================
+#  AI Agent Firewall - policy rulebook  (Policy-as-Code)
+# =============================================================================
+#  * Edit this file via Pull Request. CI validates it and runs security
+#    regression tests; a bad edit (e.g. allowing delete_prod_db) FAILS the build.
+#  * The running firewall hot-reloads this file within ~2 seconds, with no restart
+#    and without dropping WebSocket connections. If a new version is invalid,
+#    the firewall keeps enforcing the last good one.
+#
+#  decision:
+#    ALLOW             run immediately
+#    BLOCK             never run, return 403 to the agent
+#    REQUIRE_APPROVAL  pause, ask a human on the Android app (auto-deny after timeout)
+#
+#  Guard rails enforced by the validator:
+#    - HIGH / CRITICAL risk can never be ALLOW
+#    - default_decision can never be ALLOW (unknown actions fail closed)
+# =============================================================================
+version: 1
+
+default_decision: REQUIRE_APPROVAL
+
+rules:
+  - action: read_logs
+    risk: LOW
+    decision: ALLOW
+    description: Read-only access to server logs.
+
+  - action: spin_up_dev_vm
+    risk: MEDIUM
+    decision: REQUIRE_APPROVAL
+    description: Creates a billable dev server.
+
+  - action: change_iam_permissions
+    risk: HIGH
+    decision: REQUIRE_APPROVAL
+    description: Elevates permissions of an identity.
+
+  - action: delete_prod_db
+    risk: CRITICAL
+    decision: BLOCK
+    description: Destroys production customer data. Never allowed.

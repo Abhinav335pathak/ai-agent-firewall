@@ -1,0 +1,13 @@
+{
+  "name": "company-api-server",
+  "version": "1.0.0",
+  "description": "Demo company backend (real Express + real PostgreSQL) that the AI agent is attached to",
+  "main": "index.js",
+  "private": true,
+  "engines": { "node": ">=20" },
+  "scripts": { "start": "node index.js" },
+  "dependencies": {
+    "express": "^4.21.0",
+    "pg": "^8.12.0"
+  }
+}

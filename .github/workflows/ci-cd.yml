@@ -1,0 +1,203 @@
+name: CI/CD
+
+# Pull request  -> test, integration test, build + scan   (nothing is pushed or deployed)
+# Push to main  -> the same, then push images to Docker Hub, deploy to EC2, smoke-test live
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-cd-${{ github.ref }}
+  cancel-in-progress: false # never cancel a deploy half-way
+
+env:
+  NODE_VERSION: "22"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. Unit tests + policy-as-code validation
+  # ---------------------------------------------------------------------------
+  test:
+    name: Policy validation & unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install firewall-proxy dependencies
+        working-directory: firewall-proxy
+        run: |
+          if [ -f package-lock.json ]; then npm ci; else npm install; fi
+
+      - name: Validate policy/policies.yaml (schema + safety invariants)
+        working-directory: firewall-proxy
+        run: node scripts/validate-policy.js ../policy/policies.yaml
+
+      - name: Security regression tests (a bad policy edit fails the build here)
+        working-directory: firewall-proxy
+        run: npm test
+
+      - name: Syntax-check the other services
+        run: |
+          node --check company-api-server/index.js
+          node --check agent-simulator/simulate.js
+          node --check firewall-proxy/src/index.js
+
+  terraform:
+    name: Terraform validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - name: Validate
+        working-directory: terraform
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
+
+  # ---------------------------------------------------------------------------
+  # 2. Boot the whole stack in CI and attack it
+  # ---------------------------------------------------------------------------
+  integration:
+    name: Integration test (real containers)
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Start the full stack
+        run: |
+          cp .env.example .env
+          docker compose up -d --build --wait --wait-timeout 240
+
+      - name: Run the 4 agent scenarios (robot reviewer approves VM, rejects IAM)
+        env:
+          ADMIN_TOKEN: demo-admin-token
+        run: node agent-simulator/simulate.js --url http://localhost --auto-approve --assert --delay 500
+
+      - name: Smoke test + verify the database state after the demo
+        run: ./scripts/smoke-test.sh http://localhost --after-demo
+
+      - name: Prove the agent is network-isolated from the data tier
+        run: ./scripts/prove-isolation.sh
+
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose logs --no-color --tail=200
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
+
+  # ---------------------------------------------------------------------------
+  # 3. Build images, scan for vulnerabilities, push to Docker Hub (main only)
+  # ---------------------------------------------------------------------------
+  build-scan-push:
+    name: Build, scan, push (${{ matrix.service }})
+    needs: [test, terraform, integration]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        service: [firewall-proxy, company-api-server]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image (local only, for scanning)
+        uses: docker/build-push-action@v6
+        with:
+          context: ./${{ matrix.service }}
+          load: true
+          push: false
+          tags: scan/${{ matrix.service }}:ci
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+
+      - name: Trivy scan - fail on fixable CRITICAL vulnerabilities
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: scan/${{ matrix.service }}:ci
+          format: table
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Log in to Docker Hub
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Push image (tags - commit SHA and latest)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/build-push-action@v6
+        with:
+          context: ./${{ matrix.service }}
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.service }}:${{ github.sha }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.service }}:latest
+          cache-from: type=gha,scope=${{ matrix.service }}
+
+  # ---------------------------------------------------------------------------
+  # 4. Deploy to EC2 (main only), then smoke-test the LIVE server
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: Deploy to EC2
+    needs: build-scan-push
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      EC2_HOST: ${{ secrets.EC2_HOST }}
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      IMAGE_TAG: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          # the server may still be finishing its first boot: retry for up to ~4 minutes
+          for i in $(seq 1 24); do
+            ssh-keyscan -T 5 -H "$EC2_HOST" > /tmp/host_keys 2>/dev/null
+            if [ -s /tmp/host_keys ]; then break; fi
+            echo "waiting for SSH on $EC2_HOST ($i/24)..."; sleep 10
+          done
+          [ -s /tmp/host_keys ] || { echo "SSH never came up on $EC2_HOST" >&2; exit 1; }
+          cat /tmp/host_keys >> ~/.ssh/known_hosts
+
+      - name: Upload deployment files
+        run: |
+          SSH="ssh -i $HOME/.ssh/deploy_key ubuntu@$EC2_HOST"
+          $SSH 'cloud-init status --wait >/dev/null 2>&1 || true; mkdir -p ~/app'
+          tar czf - docker-compose.yml docker-compose.monitoring.yml .env.example nginx policy monitoring scripts \
+            | $SSH 'tar xzf - -C ~/app'
+
+      - name: Pull images and restart the stack (auto-rollback on failure)
+        run: |
+          ssh -i "$HOME/.ssh/deploy_key" "ubuntu@$EC2_HOST" \
+            "cd ~/app && DOCKERHUB_USERNAME='$DOCKERHUB_USERNAME' IMAGE_TAG='$IMAGE_TAG' bash scripts/deploy-remote.sh"
+
+      - name: Smoke test the live server
+        run: ./scripts/smoke-test.sh "http://$EC2_HOST"

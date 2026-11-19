@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Agent Firewall - Live Console</title>
+<style>
+  :root {
+    --bg: #0e1116; --panel: #161b22; --line: #2a313c; --text: #e6edf3; --muted: #8b949e;
+    --green: #3fb950; --red: #f85149; --amber: #d29922; --blue: #58a6ff; --gray: #6e7681;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  header { display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: center; padding: 14px 20px; border-bottom: 1px solid var(--line); }
+  header h1 { margin: 0; font-size: 18px; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 2px 10px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--gray); }
+  .dot.on { background: var(--green); } .dot.off { background: var(--red); }
+  header label { margin-left: auto; color: var(--muted); font-size: 12px; }
+  header input { background: var(--panel); border: 1px solid var(--line); color: var(--text); border-radius: 6px; padding: 4px 8px; width: 190px; }
+  main { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 16px 20px; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  section h2 { margin: 0 0 4px; font-size: 15px; }
+  .sub { color: var(--muted); font-size: 12px; margin-bottom: 10px; }
+  h3 { margin: 14px 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line); font-size: 13px; }
+  th { color: var(--muted); font-weight: 500; }
+  .destroyed { border: 1px solid var(--red); background: rgba(248,81,73,.12); color: var(--red); padding: 12px; border-radius: 8px; font-weight: 600; }
+  .feed { display: flex; flex-direction: column; gap: 8px; max-height: 62vh; overflow: auto; }
+  .item { border: 1px solid var(--line); border-left-width: 4px; border-radius: 8px; padding: 8px 10px; }
+  .item .top { display: flex; justify-content: space-between; gap: 8px; }
+  .item code { font-size: 13px; }
+  .item .meta { color: var(--muted); font-size: 12px; }
+  .badge { font-size: 11px; font-weight: 700; letter-spacing: .04em; }
+  .ALLOWED, .APPROVED_BY_HUMAN { border-left-color: var(--green); } .ALLOWED .badge, .APPROVED_BY_HUMAN .badge { color: var(--green); }
+  .BLOCKED, .ERROR { border-left-color: var(--red); } .BLOCKED .badge, .ERROR .badge { color: var(--red); }
+  .REJECTED_BY_HUMAN { border-left-color: var(--amber); } .REJECTED_BY_HUMAN .badge { color: var(--amber); }
+  .TIMED_OUT, .CANCELLED { border-left-color: var(--gray); } .TIMED_OUT .badge, .CANCELLED .badge { color: var(--gray); }
+  .PENDING_APPROVAL { border-left-color: var(--blue); background: rgba(88,166,255,.08); }
+  .PENDING_APPROVAL .badge { color: var(--blue); }
+  .actions { display: flex; gap: 8px; margin-top: 8px; }
+  button { border: 0; border-radius: 6px; padding: 6px 14px; font-weight: 600; cursor: pointer; color: #fff; }
+  button.approve { background: #238636; } button.reject { background: #b62324; }
+  .empty { color: var(--muted); font-style: italic; padding: 8px 0; }
+  #toast { color: var(--amber); font-size: 12px; min-height: 16px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>AI Agent Firewall</h1>
+  <span class="pill"><span class="dot" id="wsDot"></span><span id="wsText">connecting...</span></span>
+  <span class="pill">policy <b id="policyVer">-</b></span>
+  <span id="toast"></span>
+  <label>Admin token <input id="token" type="password" placeholder="needed to approve / reject"></label>
+</header>
+
+<main>
+  <section>
+    <h2>Company systems (live PostgreSQL)</h2>
+    <div class="sub">What the agent is attached to. Refreshes every 2 seconds. The agent cannot reach this directly.</div>
+    <h3>customers</h3><div id="customers"></div>
+    <h3>cloud_resources</h3><div id="resources"></div>
+    <h3>iam_roles</h3><div id="iam"></div>
+    <div class="sub" id="checkedAt" style="margin-top:12px"></div>
+  </section>
+
+  <section>
+    <h2>Firewall</h2>
+    <div class="sub">Every action the agent attempts, evaluated in real time.</div>
+    <h3>Waiting for a human</h3>
+    <div class="feed" id="pending"></div>
+    <h3>Audit feed</h3>
+    <div class="feed" id="feed"></div>
+  </section>
+</main>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+  const $ = (id) => document.getElementById(id);
+  function el(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined) e.textContent = text;
+    return e;
+  }
+
+  // ---- admin token (kept in this browser only)
+  const tokenInput = $('token');
+  try { tokenInput.value = localStorage.getItem('adminToken') || ''; } catch (e) { /* storage blocked */ }
+  tokenInput.addEventListener('change', () => { try { localStorage.setItem('adminToken', tokenInput.value); } catch (e) {} });
+
+  // ---- company state
+  function table(cols, rows) {
+    const t = el('table');
+    const head = el('tr');
+    cols.forEach((c) => head.appendChild(el('th', '', c)));
+    t.appendChild(head);
+    rows.forEach((r) => {
+      const tr = el('tr');
+      cols.forEach((c) => tr.appendChild(el('td', '', r[c] == null ? '' : String(r[c]))));
+      t.appendChild(tr);
+    });
+    return t;
+  }
+  function put(id, node) { const box = $(id); box.replaceChildren(node); }
+
+  async function refreshCompany() {
+    try {
+      const d = await (await fetch('/company-status.json', { cache: 'no-store' })).json();
+      if (d.error) throw new Error(d.error);
+      put('customers', d.customers === null
+        ? el('div', 'destroyed', 'TABLE "customers" DOES NOT EXIST - production data destroyed')
+        : table(['id', 'name', 'email', 'plan'], d.customers));
+      put('resources', table(['id', 'resource_name', 'status'], d.cloudResources));
+      put('iam', table(['username', 'role'], d.iamRoles));
+      $('checkedAt').textContent = 'last checked ' + new Date(d.checkedAt).toLocaleTimeString();
+    } catch (err) {
+      put('customers', el('div', 'destroyed', 'Company API unreachable: ' + err.message));
+    }
+  }
+
+  // ---- feed + approvals
+  const pendingEntries = new Map();
+  function itemNode(e, withButtons) {
+    const n = el('div', 'item ' + e.decision);
+    const top = el('div', 'top');
+    top.appendChild(el('code', '', e.action));
+    top.appendChild(el('span', 'badge', e.decision.replaceAll('_', ' ')));
+    n.appendChild(top);
+    const bits = [e.agent, e.target, 'risk ' + e.risk];
+    if (e.latencyMs != null && !withButtons) bits.push(e.latencyMs + ' ms');
+    n.appendChild(el('div', 'meta', bits.filter(Boolean).join('  ·  ') + '  ·  ' + new Date(e.timestamp).toLocaleTimeString()));
+    if (withButtons) {
+      const row = el('div', 'actions');
+      const ok = el('button', 'approve', 'Approve');
+      const no = el('button', 'reject', 'Reject');
+      ok.onclick = () => decide(e.id, true);
+      no.onclick = () => decide(e.id, false);
+      row.append(ok, no);
+      n.appendChild(row);
+    }
+    return n;
+  }
+  function renderPending() {
+    const box = $('pending');
+    box.replaceChildren();
+    if (!pendingEntries.size) { box.appendChild(el('div', 'empty', 'Nothing waiting.')); return; }
+    [...pendingEntries.values()].forEach((e) => box.appendChild(itemNode(e, true)));
+  }
+  function addFeed(e) {
+    const box = $('feed');
+    const first = box.querySelector('.empty');
+    if (first) first.remove();
+    box.prepend(itemNode(e, false));
+  }
+  async function decide(id, approved) {
+    try {
+      const r = await fetch('/approval/' + encodeURIComponent(id), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: 'Bearer ' + tokenInput.value },
+        body: JSON.stringify({ approved }),
+      });
+      if (r.status === 401) toast('Wrong or missing admin token');
+      else if (r.status === 404) toast('Already decided or expired');
+    } catch (err) { toast('Request failed: ' + err.message); }
+  }
+  let toastTimer;
+  function toast(msg) { $('toast').textContent = msg; clearTimeout(toastTimer); toastTimer = setTimeout(() => { $('toast').textContent = ''; }, 5000); }
+
+  async function refreshPolicy() {
+    try { $('policyVer').textContent = (await (await fetch('/policy')).json()).version; } catch (e) { /* ignore */ }
+  }
+
+  // ---- realtime
+  const socket = io();
+  socket.on('connect', () => { $('wsDot').className = 'dot on'; $('wsText').textContent = 'live'; });
+  socket.on('disconnect', () => { $('wsDot').className = 'dot off'; $('wsText').textContent = 'disconnected'; });
+  socket.on('history', (list) => { $('feed').replaceChildren(); [...list].reverse().forEach(addFeed); if (!list.length) $('feed').appendChild(el('div', 'empty', 'No activity yet.')); });
+  socket.on('pending', (list) => { pendingEntries.clear(); list.forEach((e) => pendingEntries.set(e.id, e)); renderPending(); });
+  socket.on('approval_required', (e) => { pendingEntries.set(e.id, e); renderPending(); });
+  socket.on('action_event', (e) => { pendingEntries.delete(e.id); renderPending(); addFeed(e); refreshCompany(); });
+  socket.on('feed_reset', () => { pendingEntries.clear(); renderPending(); $('feed').replaceChildren(el('div', 'empty', 'Feed cleared.')); refreshCompany(); });
+  socket.on('policy_reloaded', (s) => { $('policyVer').textContent = s.version; toast('Policy hot-reloaded -> ' + s.version); });
+
+  renderPending(); refreshCompany(); refreshPolicy();
+  setInterval(refreshCompany, 2000);
+</script>
+</body>
+</html>

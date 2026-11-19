@@ -1,0 +1,143 @@
+# =============================================================================
+#  AI Agent Firewall - full stack
+#
+#  Local:       cp .env.example .env && docker compose up -d --build --wait
+#  Production:  the same file; images come from Docker Hub (docker compose pull)
+#
+#  NETWORK ISOLATION (the whole point of the project):
+#
+#    internet --> nginx --> firewall-proxy ----> company-api-server --> company-postgres-db
+#                 [public_net]   |             [company_private_net: internal]
+#                                +---------> audit-db  [audit_net: internal]
+#
+#  * "internal: true" networks have no route to or from the outside world.
+#  * The agent only ever sits on public_net, so it cannot resolve or reach the
+#    company API or any database. The firewall is the ONLY bridge.
+# =============================================================================
+name: ai-agent-firewall
+
+x-defaults: &defaults
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  # --------------------------------------------------------------- edge proxy
+  nginx:
+    <<: *defaults
+    image: nginx:stable-alpine
+    ports:
+      - "${HTTP_PORT:-80}:80"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      firewall-proxy:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/nginx-health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    networks: [public_net]
+
+  # ------------------------------------------------------------- the firewall
+  firewall-proxy:
+    <<: *defaults
+    build:
+      context: ./firewall-proxy
+    image: ${DOCKERHUB_USERNAME:-local}/firewall-proxy:${IMAGE_TAG:-latest}
+    environment:
+      PORT: "3000"
+      COMPANY_API_URL: http://company-api-server:4000
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?set INTERNAL_API_TOKEN in .env}
+      AUDIT_DATABASE_URL: postgres://audit:${AUDIT_DB_PASSWORD:?set AUDIT_DB_PASSWORD in .env}@audit-db:5432/audit
+      ADMIN_TOKEN: ${ADMIN_TOKEN:?set ADMIN_TOKEN in .env}
+      POLICY_FILE: /app/policy/policies.yaml
+      APPROVAL_TIMEOUT_MS: ${APPROVAL_TIMEOUT_MS:-30000}
+      ALLOW_AUDIT_RESET: ${ALLOW_AUDIT_RESET:-true}
+    volumes:
+      # Mount the DIRECTORY (not the single file) so hot-reload keeps working
+      # when the file is replaced by a deploy.
+      - ./policy:/app/policy:ro
+    depends_on:
+      company-api-server:
+        condition: service_healthy
+      audit-db:
+        condition: service_healthy
+    networks: [public_net, company_private_net, audit_net]
+
+  # ---------------------------------------------------- the "company" systems
+  company-api-server:
+    <<: *defaults
+    build:
+      context: ./company-api-server
+    image: ${DOCKERHUB_USERNAME:-local}/company-api-server:${IMAGE_TAG:-latest}
+    environment:
+      PORT: "4000"
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?set INTERNAL_API_TOKEN in .env}
+      DATABASE_URL: postgres://company:${COMPANY_DB_PASSWORD:?set COMPANY_DB_PASSWORD in .env}@company-postgres-db:5432/company_prod
+    depends_on:
+      company-postgres-db:
+        condition: service_healthy
+    networks: [company_private_net]
+
+  company-postgres-db:
+    <<: *defaults
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: company
+      POSTGRES_PASSWORD: ${COMPANY_DB_PASSWORD:?set COMPANY_DB_PASSWORD in .env}
+      POSTGRES_DB: company_prod
+    volumes:
+      - company_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U company -d company_prod"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [company_private_net]
+
+  # ------------------------------------------------------------- audit store
+  audit-db:
+    <<: *defaults
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: audit
+      POSTGRES_PASSWORD: ${AUDIT_DB_PASSWORD:?set AUDIT_DB_PASSWORD in .env}
+      POSTGRES_DB: audit
+    volumes:
+      - audit_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U audit -d audit"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [audit_net]
+
+  # -------------------------------------- the scripted agent (run on demand)
+  agent-simulator:
+    build:
+      context: ./agent-simulator
+    image: ${DOCKERHUB_USERNAME:-local}/agent-simulator:${IMAGE_TAG:-latest}
+    profiles: ["tools"]
+    environment:
+      FIREWALL_URL: http://firewall-proxy:3000
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+    networks: [public_net] # NOT on the company network: it has no route to the data
+
+networks:
+  public_net:
+    driver: bridge
+  company_private_net:
+    driver: bridge
+    internal: true
+  audit_net:
+    driver: bridge
+    internal: true
+
+volumes:
+  company_pgdata:
+  audit_pgdata:

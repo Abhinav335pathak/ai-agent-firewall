@@ -1,0 +1,20 @@
+{
+  "name": "firewall-proxy",
+  "version": "1.0.0",
+  "description": "AI Agent Firewall - policy enforcement proxy with human-in-the-loop approvals",
+  "main": "src/index.js",
+  "private": true,
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test",
+    "validate-policy": "node scripts/validate-policy.js ../policy/policies.yaml"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.0",
+    "js-yaml": "^4.1.0",
+    "pg": "^8.12.0",
+    "socket.io": "^4.7.5"
+  }
+}

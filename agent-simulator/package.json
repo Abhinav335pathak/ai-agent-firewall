@@ -1,0 +1,9 @@
+{
+  "name": "agent-simulator",
+  "version": "1.0.0",
+  "description": "Scripted AI agent that fires the 4 demo scenarios at the firewall",
+  "main": "simulate.js",
+  "private": true,
+  "engines": { "node": ">=20" },
+  "scripts": { "start": "node simulate.js" }
+}

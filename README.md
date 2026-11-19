@@ -37,7 +37,7 @@ structured JSON; a real LLM agent would use the same endpoint (see [section 13](
 | **nginx** | Single public endpoint (port 80) for REST + WebSocket | container, public network |
 | **agent-simulator** | Scripted "AI agent" firing the 4 scenarios | run on demand |
 | **Web consoles** | Agent chat and live feed + authenticated approve/reject | browser |
-| **Flutter Android app** | Authenticated live feed, human approvals, recent audit timeline and history; source in `app/` | phone |
+| **Android approval app** | Authenticated live feed, human approvals, recent audit timeline and history; source in `app/` | phone |
 
 ### Architecture and network isolation
 
@@ -347,9 +347,9 @@ ssh -i ~/.ssh/firewall-ec2-key ubuntu@$HOST 'grep ADMIN_TOKEN ~/app/.env'
 
 ---
 
-## 10. Part G - Flutter Android operator app
+## 10. Part G - Android approval and monitoring app
 
-The Flutter app is in [`app/`](app/README.md). Run it with Flutter 3.38.9:
+The operator app is in [`app/`](app/README.md). Run it with Flutter 3.38.9:
 
 ```bash
 cd app

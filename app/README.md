@@ -1,6 +1,6 @@
-# AI Agent Firewall — Flutter operator app
+# AI Agent Firewall — Android approval console
 
-A real Android reviewer client for the same gateway used by the web consoles and CLI agents. Application code lives in `app/lib`; Android packaging lives in `app/android`. The Flutter package name is `firewall_console` and the Android application ID is `dev.aiagentfirewall.firewall_console`.
+A real Android reviewer client for the same gateway used by the web consoles and CLI agents. Application code lives in `app/lib`; Android packaging lives in `app/android`. The app package name is `firewall_console` and the Android application ID is `dev.aiagentfirewall.firewall_console`.
 
 ## Screens and flow
 
@@ -88,10 +88,10 @@ flutter test integration_test/operator_flow_test.dart -d <your-android-device-id
 
 Use `http://127.0.0.1:3300` for a USB device with the explicit reverse rule above. The live contract test exercises real Dart REST/Socket.IO authentication, ALLOW/BLOCK, approval, rejection, timeout and foreground reconnect against the real gateway. The Android integration test drives actual widgets through login, complete SQL inspection, approve, reject, reconnect and logout. The upstream is mocked in these mobile tests; database safety is covered by the repository's existing container security workflow.
 
-The `Flutter Android` workflow runs formatting, analyzer, unit/widget tests, the live gateway contract test, APK build and the Android emulator flow. Download its `agent-firewall-demo-apk` artifact for the demo. APKs are not committed to Git.
+The `Android app CI` workflow runs formatting, analyzer, unit/widget tests, the live gateway contract test, APK build and the Android emulator flow. Download its `agent-firewall-demo-apk` artifact for the demo. APKs are not committed to Git.
 
 Build output: `app/build/app/outputs/flutter-apk/app-debug.apk` (path from repository root). The generated Gradle release configuration also uses the demo debug key; configure a private release keystore before distributing a production build. The current deliverable is a debug-signed demo APK, not a Play Store release.
 
 ## Deliberately deferred
 
-Background push delivery, persistent device login/biometrics, policy dry-run, server-paginated history and a complete per-request audit endpoint need their own backend/device work. The current timeline displays only stages present in the bounded recent feed. iOS/web platform scaffolds are not included or tested; Flutter source can be extended to them later.
+Background push delivery, persistent device login/biometrics, policy dry-run, server-paginated history and a complete per-request audit endpoint need their own backend/device work. The current timeline displays only stages present in the bounded recent feed. iOS/web platform scaffolds are not included or tested; The app source can be extended to them later.

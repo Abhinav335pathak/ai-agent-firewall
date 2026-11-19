@@ -1,17 +1,17 @@
-name: Flutter Android
+name: Android app CI
 
 on:
   push:
     branches: [main]
-    paths: ['app/**', 'firewall-proxy/**', 'policy/**', '.github/workflows/flutter-app.yml']
+    paths: ['app/**', 'firewall-proxy/**', 'policy/**', '.github/workflows/android-app.yml']
   pull_request:
-    paths: ['app/**', 'firewall-proxy/**', 'policy/**', '.github/workflows/flutter-app.yml']
+    paths: ['app/**', 'firewall-proxy/**', 'policy/**', '.github/workflows/android-app.yml']
   workflow_dispatch:
 
 permissions:
   contents: read
 concurrency:
-  group: flutter-${{ github.ref }}
+  group: android-app-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -61,7 +61,7 @@ jobs:
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
-          name: flutter-coverage
+          name: app-test-coverage
           path: app/coverage/lcov.info
 
   android-ui:

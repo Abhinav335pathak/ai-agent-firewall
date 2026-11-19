@@ -1,28 +1,8 @@
 #!/usr/bin/env node
 'use strict';
 
-/**
- * Interactive Gemini Text-to-SQL AI Agent.
- * Translates natural-language user/faculty prompts into PostgreSQL queries,
- * sends them to POST /agent/execute for AST policy inspection, and summarizes
- * the real PostgreSQL results (or firewall block) in plain English.
- *
- * Usage:
- *   GEMINI_API_KEY="AIza..." node agent-simulator/gemini-sql-agent.js --url http://3.108.14.197
- */
-
 const readline = require('node:readline/promises');
 const { parseArgs } = require('node:util');
-
-const { values: opts } = parseArgs({ options: { url: { type: 'string' } } });
-const BASE = (opts.url || process.env.FIREWALL_URL || 'http://3.108.14.197').replace(/\/$/, '');
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const AGENT = 'Gemini-SQL-Agent';
-
-if (!GEMINI_API_KEY) {
-  console.error('Error: Set GEMINI_API_KEY environment variable first.');
-  process.exit(1);
-}
 
 const ICON = { ALLOWED: '✅', APPROVED: '✅', BLOCKED: '⛔', REJECTED: '🚫', TIMED_OUT: '⏱️', ERROR: '💥' };
 
@@ -38,7 +18,7 @@ Do NOT refuse dangerous commands on your own—always submit the generated SQL t
 After receiving the tool response, explain the database results or firewall block clearly in 1-2 sentences.
 `;
 
-const tools = [{
+const TOOLS = [{
   functionDeclarations: [{
     name: 'execute_sql',
     description: 'Execute a PostgreSQL query against company_prod via the AI Agent Firewall.',
@@ -52,57 +32,243 @@ const tools = [{
   }],
 }];
 
-const MODELS = ['gemini-3.8-flash', 'gemini-3.8-flash-lite', 'gemini-2.5-flash-lite'];
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const DEFAULT_MODEL = 'gemini-3.8-flash';
+const DEFAULT_FALLBACKS = ['gemini-3.8-flash-lite', 'gemini-2.5-flash-lite'];
+const defaultSleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function callGemini(contents) {
-  let lastErr = '';
-  for (const model of MODELS) {
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            systemInstruction: { parts: [{ text: SYSTEM_INSTRUCTION }] },
-            contents,
-            tools,
-          }),
-        }
-      );
-      if (res.ok) return res.json();
-
-      lastErr = `HTTP ${res.status} (${model}): ${await res.text()}`;
-      // Retry quickly on temporary 503/429 spikes, otherwise fail over to next model
-      if (res.status === 503 || res.status === 429) {
-        await sleep(800);
-        continue;
-      }
-      break;
-    }
-  }
-  throw new Error(`All Gemini models busy/unavailable -> ${lastErr}`);
+function sanitizeForBackup(contents) {
+  return contents.map((msg) => ({
+    ...msg,
+    parts: (msg.parts || []).map((p) => {
+      if (!p || typeof p !== 'object') return p;
+      const copy = { ...p };
+      delete copy.thoughtSignature;
+      return copy;
+    }),
+  }));
 }
-// async function callGemini(contents) {
-//   const res = await fetch(
-//     `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${GEMINI_API_KEY}`,
-//     {
-//       method: 'POST',
-//       headers: { 'Content-Type': 'application/json' },
-//       body: JSON.stringify({
-//         systemInstruction: { parts: [{ text: SYSTEM_INSTRUCTION }] },
-//         contents,
-//         tools,
-//       }),
-//     }
-//   );
-//   if (!res.ok) throw new Error(`Gemini API HTTP ${res.status}: ${await res.text()}`);
-//   return res.json();
-// }
 
-(async () => {
+function createAgent({
+  apiKey,
+  firewallUrl = process.env.FIREWALL_URL || 'http://localhost',
+  agentId = 'Gemini-SQL-Agent',
+  model = DEFAULT_MODEL,
+  fallbackModels = DEFAULT_FALLBACKS,
+  fetchImpl = globalThis.fetch,
+  sleepImpl = defaultSleep,
+  onSql,
+  onVerdict,
+} = {}) {
+  if (!apiKey) {
+    throw new Error('GEMINI_API_KEY is required');
+  }
+
+  const baseUrl = firewallUrl.replace(/\/$/, '');
+  const models = [model, ...fallbackModels.filter((m) => m && m !== model)];
+  let activeModelIndex = 0;
+
+  async function callGemini({ contents, mode, startIndex = activeModelIndex }) {
+    let lastError = null;
+
+    for (let idx = startIndex; idx < models.length; idx++) {
+      const currentModel = models[idx];
+      const maxAttempts = 2;
+      const safeContents = idx === 0 ? contents : sanitizeForBackup(contents);
+
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        let res;
+        try {
+          res = await fetchImpl(
+            `https://generativelanguage.googleapis.com/v1beta/models/${currentModel}:generateContent`,
+            {
+              method: 'POST',
+              headers: {
+                'content-type': 'application/json',
+                'x-goog-api-key': apiKey,
+              },
+              body: JSON.stringify({
+                systemInstruction: { parts: [{ text: SYSTEM_INSTRUCTION }] },
+                contents: safeContents,
+                tools: TOOLS,
+                toolConfig: { functionCallingConfig: { mode } },
+              }),
+            }
+          );
+        } catch (err) {
+          lastError = err;
+          if (attempt < maxAttempts) {
+            await sleepImpl(800);
+            continue;
+          }
+          break;
+        }
+
+        if (res.ok) {
+          activeModelIndex = idx;
+          return { data: await res.json(), modelIndex: idx, model: currentModel };
+        }
+
+        const status = res.status;
+        lastError = new Error(`Gemini API HTTP ${status} (${currentModel})`);
+
+        if (status === 400 || status === 401 || status === 402 || status === 403) {
+          throw lastError;
+        }
+        if (status === 404) {
+          break;
+        }
+        if (status === 429) {
+          if (attempt < maxAttempts) {
+            const retryAfter = Number(res.headers?.get?.('retry-after'));
+            const waitMs = Number.isFinite(retryAfter) && retryAfter > 0 ? Math.min(retryAfter * 1000, 5000) : 800;
+            await sleepImpl(waitMs);
+            continue;
+          }
+          break;
+        }
+        if (status >= 500) {
+          if (attempt < maxAttempts) {
+            await sleepImpl(800);
+            continue;
+          }
+          break;
+        }
+        throw lastError;
+      }
+    }
+
+    throw lastError || new Error('All Gemini models failed');
+  }
+
+  return async function turn(prompt, history = []) {
+    const startLen = history.length;
+    const userTurn = { role: 'user', parts: [{ text: prompt }] };
+    history.push(userTurn);
+
+    try {
+      const gen = await callGemini({
+        contents: history,
+        mode: 'ANY',
+        startIndex: activeModelIndex,
+      });
+
+      const modelMessage = gen.data?.candidates?.[0]?.content;
+      const parts = Array.isArray(modelMessage?.parts) ? modelMessage.parts : [];
+      const fnCalls = parts.filter((p) => p && p.functionCall);
+
+      if (
+        fnCalls.length !== 1 ||
+        fnCalls[0].functionCall.name !== 'execute_sql' ||
+        typeof fnCalls[0].functionCall.args?.sql !== 'string' ||
+        !fnCalls[0].functionCall.args.sql.trim()
+      ) {
+        throw new Error('Model must return exactly one execute_sql function call with a valid sql string');
+      }
+
+      const fnCall = fnCalls[0].functionCall;
+      const sql = fnCall.args.sql;
+      if (onSql) onSql(sql, gen.model);
+
+      const fwRes = await fetchImpl(`${baseUrl}/agent/execute`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          agentId,
+          action: 'execute_sql',
+          target: 'company_prod',
+          payload: { sql },
+        }),
+      });
+
+      const verdict = await fwRes.json().catch(() => ({}));
+      const httpStatus = fwRes.status;
+      if (onVerdict) onVerdict(verdict, httpStatus);
+
+      const fnResponsePart = {
+        functionResponse: {
+          ...(fnCall.id ? { id: fnCall.id } : {}),
+          name: 'execute_sql',
+          response: { httpStatus, firewallResponse: verdict },
+        },
+      };
+
+      const toolResponseTurn = { role: 'user', parts: [fnResponsePart] };
+      history.push(modelMessage, toolResponseTurn);
+
+      let replyText = '';
+      try {
+        const summary = await callGemini({
+          contents: history,
+          mode: 'NONE',
+          startIndex: gen.modelIndex,
+        });
+        const replyContent = summary.data?.candidates?.[0]?.content;
+        replyText = replyContent?.parts?.find((p) => typeof p.text === 'string')?.text || JSON.stringify(verdict);
+      } catch {
+        const backupStart = gen.modelIndex + 1;
+        if (backupStart < models.length) {
+          const priorHistory = sanitizeForBackup(history.slice(0, startLen));
+          const unsignedSummaryContents = [
+            ...priorHistory,
+            userTurn,
+            {
+              role: 'user',
+              parts: [{
+                text: `SQL executed: ${sql}\nFirewall response (HTTP ${httpStatus}): ${JSON.stringify(verdict)}\nSummarize this outcome in 1-2 sentences.`,
+              }],
+            },
+          ];
+          try {
+            const backupSummary = await callGemini({
+              contents: unsignedSummaryContents,
+              mode: 'NONE',
+              startIndex: backupStart,
+            });
+            const backupContent = backupSummary.data?.candidates?.[0]?.content;
+            replyText = backupContent?.parts?.find((p) => typeof p.text === 'string')?.text || JSON.stringify(verdict);
+          } catch {
+            replyText = JSON.stringify(verdict);
+          }
+        } else {
+          replyText = JSON.stringify(verdict);
+        }
+      }
+
+      return { sql, verdict, httpStatus, text: replyText };
+    } catch (err) {
+      history.length = startLen;
+      throw err;
+    }
+  };
+}
+
+async function runCli() {
+  const { values: opts } = parseArgs({ options: { url: { type: 'string' } } });
+  const BASE = (opts.url || process.env.FIREWALL_URL || 'http://3.108.14.197').replace(/\/$/, '');
+
+  let turn;
+  try {
+    turn = createAgent({
+      apiKey: process.env.GEMINI_API_KEY,
+      firewallUrl: BASE,
+      onSql: (sql, model) => {
+        console.log(`\n🧠 [Gemini SQL | ${model}]  ${sql}`);
+        console.log(`🛡️  [Firewall]    Parsing SQL AST & evaluating policies.yaml...`);
+      },
+      onVerdict: (verdict, httpStatus) => {
+        const label = verdict.status || 'UNKNOWN';
+        console.log(
+          `    ${ICON[label] || '❔'} Verdict: ${label} (HTTP ${httpStatus}) | Rule: ${verdict.classifiedAction || 'n/a'} | Risk: ${verdict.risk || 'n/a'}`
+        );
+      },
+    });
+  } catch (err) {
+    console.error(`Error: ${err.message}`);
+    process.exit(1);
+  }
+
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  rl.on('close', () => process.exit(0));
   const history = [];
 
   console.log(`\n=================================================================`);
@@ -115,60 +281,19 @@ async function callGemini(contents) {
     if (!prompt.trim()) continue;
     if (prompt.trim().toLowerCase() === 'exit') break;
 
-    history.push({ role: 'user', parts: [{ text: prompt }] });
-
     try {
-      const turn1 = await callGemini(history);
-      const modelMsg = turn1.candidates?.[0]?.content;
-      const call = modelMsg?.parts?.find((p) => p.functionCall)?.functionCall;
-
-      if (!call) {
-        console.log(`\n🤖 Gemini > ${modelMsg?.parts?.[0]?.text || 'No SQL generated.'}\n`);
-        if (modelMsg) history.push(modelMsg);
-        continue;
-      }
-
-      history.push(modelMsg);
-      const generatedSql = call.args.sql;
-      console.log(`\n🧠 [Gemini SQL]  ${generatedSql}`);
-      console.log(`🛡️  [Firewall]    Parsing SQL AST & evaluating policies.yaml...`);
-
-      const fwRes = await fetch(`${BASE}/agent/execute`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          agentId: AGENT,
-          action: 'execute_sql',
-          target: 'company_prod',
-          payload: { sql: generatedSql },
-        }),
-        signal: AbortSignal.timeout(60000),
-      });
-
-      const fwData = await fwRes.json().catch(() => ({}));
-      const label = fwData.status || 'UNKNOWN';
-      console.log(
-        `    ${ICON[label] || '❔'} Verdict: ${label} (HTTP ${fwRes.status}) | Rule: ${fwData.classifiedAction || 'n/a'} | Risk: ${fwData.risk || 'n/a'}`
-      );
-
-      history.push({
-        role: 'user',
-        parts: [{
-          functionResponse: {
-            name: 'execute_sql',
-            response: { httpStatus: fwRes.status, firewallResponse: fwData },
-          },
-        }],
-      });
-
-      const turn2 = await callGemini(history);
-      const finalMsg = turn2.candidates?.[0]?.content;
-      if (finalMsg) history.push(finalMsg);
-      console.log(`\n🤖 Gemini > ${finalMsg?.parts?.[0]?.text || JSON.stringify(fwData)}\n`);
+      const result = await turn(prompt, history);
+      console.log(`\n🤖 Gemini > ${result.text}\n`);
     } catch (err) {
       console.error(`\n💥 Error: ${err.message}\n`);
     }
   }
 
   rl.close();
-})();
+}
+
+if (require.main === module) {
+  runCli();
+}
+
+module.exports = { createAgent, SYSTEM_INSTRUCTION, TOOLS };

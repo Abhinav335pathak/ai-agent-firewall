@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 'use strict';
+const { randomUUID } = require('node:crypto');
 
 // Use only with a disposable local/CI database: this test creates one customer.
 const assert = require('node:assert/strict');
@@ -11,7 +12,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function request(path, body, token = TOKEN) {
   const response = await fetch(BASE + path, {
     method: body ? 'POST' : 'GET',
-    headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
+    headers: { 'content-type': 'application/json', 'idempotency-key': randomUUID(), ...(token ? { authorization: `Bearer ${token}` } : {}) },
     body: body ? JSON.stringify(body) : undefined,
     signal: AbortSignal.timeout(40000),
   });

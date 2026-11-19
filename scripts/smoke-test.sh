@@ -25,7 +25,7 @@ fail() { echo "FAIL  $*" >&2; FAILS=$((FAILS + 1)); }
 
 post_status() { # post_status <action>  -> prints HTTP status
   curl -s -o /dev/null -w '%{http_code}' --max-time 20 -X POST "$BASE/agent/execute" \
-    -H "Authorization: Bearer $AGENT_TOKEN" -H 'Content-Type: application/json' -d "{\"agentId\":\"smoke-test\",\"action\":\"$1\"}"
+    -H "Idempotency-Key: smoke-$$-$RANDOM-$1" -H "Authorization: Bearer $AGENT_TOKEN" -H 'Content-Type: application/json' -d "{\"agentId\":\"smoke-test\",\"action\":\"$1\"}"
 }
 
 echo "Smoke test against $BASE"

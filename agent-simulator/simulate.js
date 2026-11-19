@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 'use strict';
+const { randomUUID } = require('node:crypto');
 
 /**
  * Scripted "AI agent". Fires 4 realistic actions at the firewall, one after another.
@@ -59,7 +60,7 @@ async function robotReviewer(action, approved, state) {
     if (hit) {
       const r = await fetch(`${BASE}/approval/${hit.id}`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` },
+        headers: { 'content-type': 'application/json', 'idempotency-key': randomUUID(), authorization: `Bearer ${TOKEN}` },
         body: JSON.stringify({ approved }),
       });
       if (r.status === 401) {
@@ -87,7 +88,7 @@ async function run(s) {
   try {
     res = await fetch(`${BASE}/agent/execute`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${process.env.AGENT_TOKEN || ''}` },
+      headers: { 'content-type': 'application/json', 'idempotency-key': randomUUID(), authorization: `Bearer ${process.env.AGENT_TOKEN || ''}` },
       body: JSON.stringify({ agentId: AGENT, action: s.action, target: s.target, payload: {} }),
       signal: AbortSignal.timeout(60000),
     });

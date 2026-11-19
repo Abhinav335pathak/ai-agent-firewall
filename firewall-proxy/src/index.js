@@ -25,6 +25,7 @@ const { Metrics } = require('./metrics');
 
 const { classifySqlAction, referencedTables } = require('./sqlPolicy');
 const { createAccess } = require('./access');
+const { RequestStore } = require('./requestStore');
 
 const config = {
   port: Number(process.env.PORT || 3000),
@@ -69,6 +70,8 @@ async function main() {
 
   const audit = new AuditStore(config.auditDbUrl);
   await audit.init();
+  const requestsStore = new RequestStore(audit.pool);
+  await requestsStore.init();
   const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
   const access = createAccess(process.env, async (req, status) => {
     await audit.record({ id: crypto.randomUUID(), timestamp: new Date().toISOString(),
@@ -221,8 +224,22 @@ async function main() {
     const evalSeconds = Number(nowNs() - evalStart) / 1e9;
     metrics.observe('firewall_policy_eval_seconds', evalSeconds);
 
+    const key = req.get('idempotency-key');
+    if (!key || !/^[a-zA-Z0-9_.:-]{8,128}$/.test(key)) {
+      await audit.record({ id: crypto.randomUUID(), timestamp: new Date().toISOString(), agent, action, target,
+        risk: verdict.risk, policyDecision: 'BLOCK', decision: 'INVALID', detail: { reason: 'valid Idempotency-Key required' } });
+      return res.status(400).json({ status: 'INVALID', error: 'Idempotency-Key header (8-128 safe characters) is required' });
+    }
+    const reservation = await requestsStore.reserve(agent, key, { action, target, payload });
+    if (reservation.conflict) return res.status(409).json({ status: 'CONFLICT', error: 'Idempotency key already belongs to a different request' });
+    if (reservation.replay) return res.status(reservation.replay.status).json(reservation.replay.body);
+    if (reservation.pending) return res.status(409).json({ status: reservation.interrupted ? 'EXECUTION_UNCONFIRMED' : 'IN_PROGRESS', id: reservation.id, reason: 'Do not submit again with a new key; inspect the audit trail first' });
+    const respond = async (status, data) => {
+      await requestsStore.complete(agent, key, status, data);
+      return res.status(status).json(data);
+    };
     const base = {
-      id: crypto.randomUUID(),
+      id: reservation.id,
       timestamp: new Date().toISOString(),
       agent,
       action,
@@ -241,7 +258,7 @@ async function main() {
       const current = engine.evaluate(action);
       if (current.decision === 'BLOCK' || (verdict.decision === 'ALLOW' && current.decision !== 'ALLOW')) {
         await finalize(base, 'BLOCKED', { detail: { reason: 'policy changed before execution' } });
-        return res.status(403).json({ status: 'BLOCKED', id: base.id, reason: 'Policy changed before execution' });
+        return respond(403, { status: 'BLOCKED', id: base.id, reason: 'Policy changed before execution' });
       }
       await finalize(base, 'EXECUTING');
       const result = await execute(action, target, payload);
@@ -253,10 +270,10 @@ async function main() {
             ...(isSql ? { sql: payload.sql } : {}),
           },
         });
-        return res.status(502).json({ status: 'ERROR', id: base.id, error: result.data.error || 'upstream failure' });
+        return respond(502, { status: 'ERROR', id: base.id, error: result.data.error || 'upstream failure' });
       }
       await finalize(base, label, isSql ? { detail: { sql: payload.sql } } : {});
-      return res.json({
+      return respond(200, {
         status: label === 'ALLOWED' ? 'ALLOWED' : 'APPROVED',
         id: base.id,
         classifiedAction: action,
@@ -271,7 +288,7 @@ async function main() {
 
     if (verdict.decision === 'BLOCK') {
       await finalize(base, 'BLOCKED', { detail: { reason: 'policy', sql: payload.sql || null } });
-      return res.status(403).json({
+      return respond(403, {
         status: 'BLOCKED',
         id: base.id,
         classifiedAction: action,
@@ -308,25 +325,26 @@ async function main() {
 
     if (['RESET', 'SHUTDOWN'].includes(outcome.reason)) {
       await finalize(base, 'CANCELLED', { detail: { reason: outcome.reason } });
-      return res.status(409).json({ status: 'CANCELLED', id: base.id });
+      return respond(409, { status: 'CANCELLED', id: base.id });
     }
     if (outcome.reason === 'AGENT_DISCONNECTED') {
       await finalize(base, 'CANCELLED', {
         detail: { reason: 'agent disconnected', ...(isSql ? { sql: payload.sql } : {}) },
       });
+      await requestsStore.complete(agent, key, 409, { status: 'CANCELLED', id: base.id });
       return undefined;
     }
     if (outcome.reason === 'TIMEOUT') {
       await finalize(base, 'TIMED_OUT', {
         detail: { reason: 'no human decision - auto-denied', ...(isSql ? { sql: payload.sql } : {}) },
       });
-      return res.status(408).json({ status: 'TIMED_OUT', id: base.id, reason: 'No human approval in time - auto-denied' });
+      return respond(408, { status: 'TIMED_OUT', id: base.id, reason: 'No human approval in time - auto-denied' });
     }
     if (!outcome.approved) {
       await finalize(base, 'REJECTED_BY_HUMAN', {
         detail: { decidedBy: outcome.by || null, ...(isSql ? { sql: payload.sql } : {}) },
       });
-      return res.status(403).json({ status: 'REJECTED', id: base.id, reason: 'Rejected by a human reviewer' });
+      return respond(403, { status: 'REJECTED', id: base.id, reason: 'Rejected by a human reviewer' });
     }
     base.detail.reviewedBy = outcome.by;
     return runAndRespond('APPROVED_BY_HUMAN');

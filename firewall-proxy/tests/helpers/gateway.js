@@ -4,6 +4,7 @@ const http = require('node:http');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { once } = require('node:events');
+const { randomUUID } = require('node:crypto');
 
 async function gateway(extraEnv = {}) {
   const forwarded = [];
@@ -41,7 +42,7 @@ async function gateway(extraEnv = {}) {
   return { base, forwarded, child,
     async request(url, body, token = 'qa-agent', extraHeaders = {}) {
       const res = await fetch(base + url, { method: body === undefined ? 'GET' : 'POST',
-        headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}), ...extraHeaders },
+        headers: { 'content-type': 'application/json', 'idempotency-key': randomUUID(), ...(token ? { authorization: `Bearer ${token}` } : {}), ...extraHeaders },
         body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(5000) });
       const text = await res.text();
       return { status: res.status, data: res.headers.get('content-type')?.includes('application/json') ? JSON.parse(text) : text };

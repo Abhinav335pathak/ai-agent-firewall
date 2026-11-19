@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 'use strict';
+const { randomUUID } = require('node:crypto');
 
 const readline = require('node:readline/promises');
 const { parseArgs } = require('node:util');
@@ -85,7 +86,7 @@ function createAgent({
             {
               method: 'POST',
               headers: {
-                'content-type': 'application/json',
+                'content-type': 'application/json', 'idempotency-key': randomUUID(),
                 'x-goog-api-key': apiKey,
               },
               body: JSON.stringify({
@@ -173,7 +174,7 @@ function createAgent({
 
       const fwRes = await fetchImpl(`${baseUrl}/agent/execute`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${process.env.AGENT_TOKEN || ''}` },
+        headers: { 'content-type': 'application/json', 'idempotency-key': randomUUID(), authorization: `Bearer ${process.env.AGENT_TOKEN || ''}` },
         body: JSON.stringify({
           agentId,
           action: 'execute_sql',

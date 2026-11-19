@@ -121,6 +121,22 @@ app.delete(
   })
 );
 
+// Executes policy-verified PostgreSQL queries generated dynamically by the Gemini AI agent.
+app.post(
+  '/sql/execute',
+  wrap(async (req, res) => {
+    const sql = String(req.body?.payload?.sql || req.body?.sql || '').trim();
+    if (!sql) return res.status(400).json({ error: 'sql query is required' });
+
+    const result = await pool.query(sql);
+    res.json({
+      command: result.command,
+      rowCount: result.rowCount,
+      rows: result.rows || [],
+    });
+  })
+);
+
 app.post(
   '/admin/reset',
   wrap(async (req, res) => {

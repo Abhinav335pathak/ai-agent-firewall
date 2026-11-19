@@ -280,7 +280,13 @@ async function main() {
     async function runAndRespond(label) {
       const result = await execute(action, target, payload);
       if (!result.ok) {
-        await finalize(base, 'ERROR', { detail: { upstreamStatus: result.status, error: result.data.error } });
+        await finalize(base, 'ERROR', {
+          detail: {
+            upstreamStatus: result.status,
+            error: result.data.error,
+            ...(isSql ? { sql: payload.sql } : {}),
+          },
+        });
         return res.status(502).json({ status: 'ERROR', id: base.id, error: result.data.error || 'upstream failure' });
       }
       await finalize(base, label, isSql ? { detail: { sql: payload.sql } } : {});
@@ -336,16 +342,22 @@ async function main() {
     if (outcome.reason === 'RESET') {
       return res.status(409).json({ status: 'CANCELLED', id: base.id });
     }
-   if (outcome.reason === 'AGENT_DISCONNECTED') {
-      await finalize(base, 'CANCELLED', { detail: { reason: 'agent disconnected', ...(isSql ? { sql: payload.sql } : {}) } });
+    if (outcome.reason === 'AGENT_DISCONNECTED') {
+      await finalize(base, 'CANCELLED', {
+        detail: { reason: 'agent disconnected', ...(isSql ? { sql: payload.sql } : {}) },
+      });
       return undefined;
     }
     if (outcome.reason === 'TIMEOUT') {
-      await finalize(base, 'TIMED_OUT', { detail: { reason: 'no human decision - auto-denied', ...(isSql ? { sql: payload.sql } : {}), ...(isSql ? { sql: payload.sql } : {}) } });
+      await finalize(base, 'TIMED_OUT', {
+        detail: { reason: 'no human decision - auto-denied', ...(isSql ? { sql: payload.sql } : {}) },
+      });
       return res.status(408).json({ status: 'TIMED_OUT', id: base.id, reason: 'No human approval in time - auto-denied' });
     }
     if (!outcome.approved) {
-      await finalize(base, 'REJECTED_BY_HUMAN', { detail: { decidedBy: outcome.by || null, ...(isSql ? { sql: payload.sql } : {}), ...(isSql ? { sql: payload.sql } : {}) } });
+      await finalize(base, 'REJECTED_BY_HUMAN', {
+        detail: { decidedBy: outcome.by || null, ...(isSql ? { sql: payload.sql } : {}) },
+      });
       return res.status(403).json({ status: 'REJECTED', id: base.id, reason: 'Rejected by a human reviewer' });
     }
     return runAndRespond('APPROVED_BY_HUMAN');

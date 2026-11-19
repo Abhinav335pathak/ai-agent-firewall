@@ -70,7 +70,12 @@ void main() {
         );
         await until(tester, () => session.pending.any((e) => e.sql == sql));
         final id = session.pending.firstWhere((e) => e.sql == sql).id;
-        await tester.tap(find.text('Approvals'));
+        await tester.tap(
+          find.descendant(
+            of: find.byType(NavigationBar),
+            matching: find.text('Approvals'),
+          ),
+        );
         await tester.pumpAndSettle();
         final card = find.byKey(ValueKey('pending-$id'));
         await tester.ensureVisible(card);

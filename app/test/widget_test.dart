@@ -43,7 +43,12 @@ void main() {
   }
 
   Future<void> details(WidgetTester tester) async {
-    await tester.tap(find.text('Approvals'));
+    await tester.tap(
+      find.descendant(
+        of: find.byType(NavigationBar),
+        matching: find.text('Approvals'),
+      ),
+    );
     await tester.pumpAndSettle();
     await tester.ensureVisible(find.byKey(const ValueKey('pending-request-1')));
     await tester.pumpAndSettle();
@@ -95,26 +100,32 @@ void main() {
       expect(find.text('Your review desk'), findsNothing);
     },
   );
-  testWidgets(
-    'overview counts requests and opens full SQL without truncation',
-    (tester) async {
-      await open(tester);
-      expect(find.text('Your review desk'), findsOneWidget);
-      await details(tester);
-      expect(
-        tester.widget<SelectableText>(find.byKey(const Key('full-sql'))).data,
-        sql,
-      );
-      expect(find.text('Evaluation policy version'), findsOneWidget);
-      await buttons(tester);
-      expect(
-        tester
-            .widget<FilledButton>(find.byKey(const Key('approve-action')))
-            .onPressed,
-        isNotNull,
-      );
-    },
-  );
+  testWidgets('repeated action review opens full SQL without truncation', (
+    tester,
+  ) async {
+    await open(tester);
+    expect(find.text('Your review desk'), findsOneWidget);
+    await details(tester);
+    expect(
+      tester.widget<SelectableText>(find.byKey(const Key('full-sql'))).data,
+      sql,
+    );
+    expect(find.text('Evaluation policy version'), findsOneWidget);
+    await buttons(tester);
+    expect(
+      tester
+          .widget<FilledButton>(find.byKey(const Key('approve-action')))
+          .onPressed,
+      isNotNull,
+    );
+    await tester.tap(find.byType(BackButton));
+    await tester.pumpAndSettle();
+    await details(tester);
+    expect(
+      tester.widget<SelectableText>(find.byKey(const Key('full-sql'))).data,
+      sql,
+    );
+  });
   testWidgets('reject requires confirmation and does not execute on cancel', (
     tester,
   ) async {

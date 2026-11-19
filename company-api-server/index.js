@@ -12,7 +12,6 @@ const path = require('path');
 const crypto = require('crypto');
 const express = require('express');
 const { Pool } = require('pg');
-const { executeSql } = require('./sqlExecutor');
 
 const PORT = Number(process.env.PORT || 4000);
 const INTERNAL_TOKEN = process.env.INTERNAL_API_TOKEN || '';
@@ -126,8 +125,15 @@ app.delete(
 app.post(
   '/sql/execute',
   wrap(async (req, res) => {
-    const sql = req.body?.payload?.sql ?? req.body?.sql;
-    res.json(await executeSql(pool, sql, req.body?.sqlAction));
+    const sql = String(req.body?.payload?.sql || req.body?.sql || '').trim();
+    if (!sql) return res.status(400).json({ error: 'sql query is required' });
+
+    const result = await pool.query(sql);
+    res.json({
+      command: result.command,
+      rowCount: result.rowCount,
+      rows: result.rows || [],
+    });
   })
 );
 
@@ -143,7 +149,7 @@ app.use((req, res) => res.status(404).json({ error: 'not found' }));
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {
   console.error('[company-api] error:', err.message);
-  res.status(err.status || 500).json({ error: err.message });
+  res.status(500).json({ error: err.message });
 });
 
 ensureSeeded()

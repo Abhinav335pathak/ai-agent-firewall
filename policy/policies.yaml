@@ -1,21 +1,6 @@
 # =============================================================================
 #  AI Agent Firewall - policy rulebook  (Policy-as-Code)
 # =============================================================================
-#  * Edit this file via Pull Request. CI validates it and runs security
-#    regression tests; a bad edit (e.g. allowing delete_prod_db) FAILS the build.
-#  * The running firewall hot-reloads this file within ~2 seconds, with no restart
-#    and without dropping WebSocket connections. If a new version is invalid,
-#    the firewall keeps enforcing the last good one.
-#
-#  decision:
-#    ALLOW             run immediately
-#    BLOCK             never run, return 403 to the agent
-#    REQUIRE_APPROVAL  pause, ask a human on the Android app (auto-deny after timeout)
-#
-#  Guard rails enforced by the validator:
-#    - HIGH / CRITICAL risk can never be ALLOW
-#    - default_decision can never be ALLOW (unknown actions fail closed)
-# =============================================================================
 version: 1
 
 default_decision: REQUIRE_APPROVAL
@@ -54,4 +39,4 @@ rules:
   - action: sql_destructive
     risk: CRITICAL
     decision: BLOCK
-    description: Destructive, unsupported or multi-statement SQL. Never allowed.
+    description: Destructive or multi-statement SQL (DROP, TRUNCATE, DELETE, ALTER). Never allowed.

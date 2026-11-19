@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'session.dart';
 import 'ui/connection.dart';
+import 'ui/console.dart';
 
 void main() => runApp(const FirewallApp());
 
@@ -68,30 +69,7 @@ class _FirewallAppState extends State<FirewallApp> with WidgetsBindingObserver {
     home: ListenableBuilder(
       listenable: session,
       builder: (context, _) => session.authenticated
-          ? Scaffold(
-              appBar: AppBar(title: const Text('Firewall connected')),
-              body: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(session.server.toString()),
-                    Text(
-                      'Policy v${session.policy['version']} · ${session.pending.length} awaiting review',
-                    ),
-                    Text(
-                      session.live
-                          ? 'Live feed connected'
-                          : 'Connecting live feed…',
-                    ),
-                    FilledButton(
-                      onPressed: session.logout,
-                      child: const Text('Disconnect'),
-                    ),
-                  ],
-                ),
-              ),
-            )
+          ? ConsoleShell(session: session)
           : ConnectionScreen(session: session),
     ),
   );

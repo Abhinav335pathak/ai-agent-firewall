@@ -234,6 +234,13 @@ class SessionController extends ChangeNotifier {
     }
   }
 
+  void reconnect() {
+    if (!authenticated || !_foreground) return;
+    live = fresh = false;
+    _listen(_generation);
+    _notify();
+  }
+
   void setForeground(bool foreground) {
     if (_foreground == foreground) return;
     _foreground = foreground;

@@ -32,8 +32,10 @@ const TOOLS = [{
   }],
 }];
 
-const DEFAULT_MODEL = 'gemini-3.8-flash';
-const DEFAULT_FALLBACKS = ['gemini-3.8-flash-lite', 'gemini-2.5-flash-lite'];
+// const DEFAULT_MODEL = 'gemini-3.8-flash';
+// const DEFAULT_FALLBACKS = ['gemini-3.8-flash-lite', 'gemini-2.5-flash-lite'];
+const DEFAULT_MODEL = 'gemini-3.5-flash-lite';
+const DEFAULT_FALLBACKS = ['gemini-3.8-flash', 'gemini-4-hydrogen'];
 const defaultSleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function sanitizeForBackup(contents) {

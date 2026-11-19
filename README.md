@@ -37,7 +37,7 @@ structured JSON; a real LLM agent would use the same endpoint (see [section 13](
 | **nginx** | Single public endpoint (port 80) for REST + WebSocket | container, public network |
 | **agent-simulator** | Scripted "AI agent" firing the 4 scenarios | run on demand |
 | **Web consoles** | Agent chat and live feed + authenticated approve/reject | browser |
-| **Android app (optional future client)** | Would use the same authenticated REST/Socket.IO API; not included here | phone |
+| **Flutter Android app** | Authenticated live feed, human approvals, recent audit timeline and history; source in `app/` | phone |
 
 ### Architecture and network isolation
 
@@ -347,13 +347,19 @@ ssh -i ~/.ssh/firewall-ec2-key ubuntu@$HOST 'grep ADMIN_TOKEN ~/app/.env'
 
 ---
 
-## 10. Part G - Connect the Android app (contract for your teammates)
+## 10. Part G - Flutter Android operator app
 
-Base URL: `http://<public_ip>` (one endpoint for REST **and** WebSocket).
+The Flutter app is in [`app/`](app/README.md). Run it with Flutter 3.38.9:
 
-> **Android blocks plain HTTP by default** (API 28+). For the demo add
-> `android:usesCleartextTraffic="true"` to the `<application>` tag in `AndroidManifest.xml`, or put a
-> domain + HTTPS in front (see Hardening).
+```bash
+cd app
+flutter pub get --enforce-lockfile
+flutter run -d <android-device-id>
+```
+
+Connect with a server origin and an operator/reviewer token. The app verifies protected endpoints, then opens the live feed. Screens cover overview, approvals, complete action/SQL details, recent history and settings. Credentials and private history stay in memory; logout clears the session.
+
+Debug builds permit HTTP for disposable local demos; release/profile builds require HTTPS. See the [app guide](app/README.md) for emulator/USB routing, the isolated QA server, tests and APK artifacts. Public HTTPS still requires your domain/DNS configuration.
 
 **Socket.IO requires `auth: { token: reviewerToken }` before it sends any history. Events the client receives** (server → app):
 
@@ -362,8 +368,8 @@ Base URL: `http://<public_ip>` (one endpoint for REST **and** WebSocket).
 | `history` | array of recent entries (newest first) | fill the feed on connect |
 | `pending` | array of waiting approvals | restore approval cards on reconnect |
 | `approval_required` | entry with `decision: "PENDING_APPROVAL"`, `expiresAt`, `timeoutMs` | **show the Approve / Reject card** |
-| `action_event` | final entry (`ALLOWED`, `BLOCKED`, `APPROVED_BY_HUMAN`, `REJECTED_BY_HUMAN`, `TIMED_OUT`, `ERROR`) | add to feed; **remove the pending card with the same `id`** |
-| `feed_reset` | - | clear the feed |
+| `action_event` | audit stage, including `INTERCEPTED`, `EXECUTING` and terminal outcomes | update feed; remove pending card only for a terminal outcome |
+| `feed_reset` | - | re-fetch authoritative history and pending approvals |
 | `policy_reloaded` | `{version, ruleCount, ...}` | optional toast |
 
 Entry shape:
@@ -389,24 +395,9 @@ connecting with `auth: { token: ADMIN_TOKEN }`.)
 
 Reader endpoints require an operator Bearer token. `GET /health` alone is public; metrics also accepts its dedicated read-only `METRICS_TOKEN`.
 
-Kotlin sketch (`io.socket:socket.io-client:2.1.0`, OkHttp):
+The app's [`gateway.dart`](app/lib/gateway.dart) implements authenticated REST and Socket.IO. [`session.dart`](app/lib/session.dart) merges events by request ID and reconciles reconnects. Review controls are disabled offline, during refresh, on expiry or while a decision is in flight. A successful review response does not imply successful execution: the final audit event supplies that result.
 
-```kotlin
-val options = IO.Options().apply { auth = mapOf("token" to reviewerToken) }
-val socket = IO.socket("https://<your-domain>", options)
-socket.on("approval_required") { args -> val e = args[0] as JSONObject; /* show card for e.getString("id") */ }
-socket.on("action_event")      { args -> val e = args[0] as JSONObject; /* add to feed, remove pending card */ }
-socket.connect()
-
-fun decide(id: String, approved: Boolean) {
-    val body = """{"approved":$approved}""".toRequestBody("application/json".toMediaType())
-    val req = Request.Builder().url("http://<public_ip>/approval/$id")
-        .header("Authorization", "Bearer $ADMIN_TOKEN").post(body).build()
-    OkHttpClient().newCall(req).enqueue(/* ... */)
-}
-```
-
-This repository ships web clients; an Android app is not implemented or verified here. The web dashboard at `/company-status` does exactly the same and works as a backup on stage.
+Recent counts and timelines are bounded by the latest 500 audit events; they do not replace the complete server audit archive. Reliable background push notifications are a separate future feature. The existing web dashboard at `/company-status` remains available for the projector.
 
 ---
 

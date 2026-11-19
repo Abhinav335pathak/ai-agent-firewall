@@ -132,6 +132,8 @@ void main() {
       );
       await tester.tap(find.text('Settings'));
       await tester.pumpAndSettle();
+      // Review feedback is temporary UI and can cover a bottom control.
+      await until(tester, () => find.byType(SnackBar).evaluate().isEmpty);
       await tester.scrollUntilVisible(
         find.byKey(const Key('logout')),
         300,
@@ -142,7 +144,14 @@ void main() {
             )
             .first,
       );
+      await until(
+        tester,
+        () =>
+            find.byKey(const Key('logout')).hitTestable().evaluate().length ==
+            1,
+      );
       await tester.tap(find.byKey(const Key('logout')));
+      await until(tester, () => !session.authenticated);
       await tester.pumpAndSettle();
       expect(find.byKey(const Key('reviewer-token')), findsOneWidget);
       expect(session.events, isEmpty);

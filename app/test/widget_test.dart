@@ -145,6 +145,47 @@ void main() {
     expect(gateway.decisions, 1);
     expect(find.byKey(const Key('approve-action')), findsNothing);
   });
+  testWidgets(
+    'settings logout clears the session after review feedback disappears',
+    (tester) async {
+      await open(tester);
+      await details(tester);
+      await buttons(tester);
+      await tester.tap(find.byKey(const Key('reject-action')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('confirm-decision')));
+      await tester.pumpAndSettle();
+      expect(find.byType(SnackBar), findsOneWidget);
+      await tester.tap(find.byType(BackButton));
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.descendant(
+          of: find.byType(NavigationBar),
+          matching: find.text('Settings'),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.pump(const Duration(seconds: 5));
+      await tester.pumpAndSettle();
+      expect(find.byType(SnackBar), findsNothing);
+      await tester.scrollUntilVisible(
+        find.byKey(const Key('logout')),
+        250,
+        scrollable: find
+            .descendant(
+              of: find.byKey(const Key('settings-list')),
+              matching: find.byType(Scrollable),
+            )
+            .first,
+      );
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('logout')).hitTestable(), findsOneWidget);
+      await tester.tap(find.byKey(const Key('logout')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('reviewer-token')), findsOneWidget);
+      expect(session.events, isEmpty);
+    },
+  );
   testWidgets('disconnect and local expiry disable review controls', (
     tester,
   ) async {

@@ -1,5 +1,17 @@
 'use strict';
 
+// The API owner manages the demo schema; AI queries never run with that role.
+async function prepareSqlRole(pool) {
+  await pool.query(`DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'firewall_sql_executor') THEN
+      CREATE ROLE firewall_sql_executor NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+    END IF;
+  END $$;
+  GRANT USAGE ON SCHEMA public TO firewall_sql_executor;
+  GRANT SELECT, INSERT, UPDATE ON customers, cloud_resources, iam_roles TO firewall_sql_executor;
+  GRANT USAGE, SELECT ON SEQUENCE customers_id_seq, cloud_resources_id_seq TO firewall_sql_executor;`);
+}
+
 /** Run one firewall-reviewed statement on a dedicated transactional connection. */
 async function executeSql(pool, sql, action) {
   if (typeof sql !== 'string' || !sql.trim() || sql.length > 8000 || !['sql_read', 'sql_write'].includes(action)) {
@@ -10,6 +22,7 @@ async function executeSql(pool, sql, action) {
   const client = await pool.connect();
   try {
     await client.query(action === 'sql_read' ? 'BEGIN READ ONLY' : 'BEGIN');
+    await client.query('SET LOCAL ROLE firewall_sql_executor');
     await client.query("SET LOCAL statement_timeout = '5s'");
     await client.query("SET LOCAL lock_timeout = '1s'");
     await client.query('SET LOCAL search_path = pg_catalog, public');
@@ -26,4 +39,4 @@ async function executeSql(pool, sql, action) {
   }
 }
 
-module.exports = { executeSql };
+module.exports = { executeSql, prepareSqlRole };

@@ -121,7 +121,9 @@ async function main() {
     if (!ex) {
       return { ok: false, status: 422, data: { error: `no executor registered for "${action}"` } };
     }
-    return companyRequest(ex.method, ex.path, { target, payload });
+    return companyRequest(ex.method, ex.path, {
+      target, payload, ...(action.startsWith('sql_') ? { sqlAction: action } : {}),
+    });
   }
 
   // ------------------------------------------------ human-in-the-loop queue

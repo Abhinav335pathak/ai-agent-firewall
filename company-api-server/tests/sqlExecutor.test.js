@@ -23,7 +23,8 @@ test('reads use a read-only transaction, extended protocol and bounded response'
   const { calls, pool } = fixture();
   const result = await executeSql(pool, 'SELECT * FROM customers', 'sql_read');
   assert.equal(calls[1], 'BEGIN READ ONLY');
-  assert.deepEqual(calls[5], { text: 'SELECT * FROM customers', queryMode: 'extended' });
+  assert.equal(calls[2], 'SET LOCAL ROLE firewall_sql_executor');
+  assert.deepEqual(calls[6], { text: 'SELECT * FROM customers', queryMode: 'extended' });
   assert.deepEqual(calls.slice(-2), ['COMMIT', 'release']);
   assert.equal(result.rows.length, 100);
   assert.equal(result.rowCount, 101);

@@ -60,23 +60,65 @@ function safeEqual(a, b) {
   return A.length === B.length && crypto.timingSafeEqual(A, B);
 }
 
+const DANGEROUS_PG_FUNCS = new Set([
+  'pg_read_file',
+  'pg_read_binary_file',
+  'pg_ls_dir',
+  'pg_stat_file',
+  'lo_import',
+  'lo_export',
+  'lo_get',
+  'lo_put',
+  'dblink',
+  'dblink_exec',
+  'pg_terminate_backend',
+  'pg_cancel_backend',
+  'pg_reload_conf',
+  'pg_rotate_logfile',
+]);
+
+function hasDangerousNode(node) {
+  if (!node || typeof node !== 'object') return false;
+  if (Array.isArray(node)) return node.some(hasDangerousNode);
+
+  if (node.type === 'function' && node.name) {
+    const fnName = typeof node.name === 'string'
+      ? node.name
+      : Array.isArray(node.name?.name)
+        ? node.name.name.map((p) => p.value).join('.')
+        : '';
+    if (DANGEROUS_PG_FUNCS.has(fnName.toLowerCase())) return true;
+  }
+
+  return Object.values(node).some(hasDangerousNode);
+}
+
 /**
- * Parses raw SQL via PostgreSQL AST to prevent regex/comment bypasses and stacked-query injection.
- * Maps SQL statement types deterministically to policy actions:
- *   SELECT             -> sql_read (LOW -> ALLOW)
- *   INSERT / UPDATE    -> sql_write (HIGH -> REQUIRE_APPROVAL)
- *   DROP / DELETE / *  -> sql_destructive (CRITICAL -> BLOCK)
+ * Parses raw SQL via PostgreSQL AST to prevent regex/comment bypasses,
+ * caller action spoofing (e.g., passing action: "sql_read" with UPDATE/DROP),
+ * SELECT ... INTO table creation, dangerous server-side file functions,
+ * and stacked-query injection.
  */
 function classifySqlAction(rawSql) {
   if (!rawSql || typeof rawSql !== 'string') return 'sql_destructive';
   try {
-    const ast = sqlParser.astify(rawSql, { database: 'PostgresQL' });
+    const normalizedSql = rawSql.trim().replace(/;+\s*$/, '').replace(/\s+RETURNING\s+[\s\S]+$/i, '');
+    const ast = sqlParser.astify(normalizedSql, { database: 'PostgresQL' });
     const statements = Array.isArray(ast) ? ast : [ast];
     if (statements.length !== 1) return 'sql_destructive';
 
-    const stmtType = String(statements[0].type || '').toLowerCase();
-    if (stmtType === 'select') return 'sql_read';
-    if (stmtType === 'insert' || stmtType === 'update') return 'sql_write';
+    const stmt = statements[0];
+    const stmtType = String(stmt.type || '').toLowerCase();
+
+    if (stmtType === 'select') {
+      if (stmt.into && stmt.into.position) return 'sql_destructive';
+      if (hasDangerousNode(stmt)) return 'sql_destructive';
+      return 'sql_read';
+    }
+    if (stmtType === 'insert' || stmtType === 'update') {
+      if (hasDangerousNode(stmt)) return 'sql_destructive';
+      return 'sql_write';
+    }
     return 'sql_destructive';
   } catch {
     return 'sql_destructive';
@@ -211,8 +253,8 @@ async function main() {
     const agent = clip(body.agentId || body.agent || 'DemoAgent-01', 64);
     const payload = body.payload && typeof body.payload === 'object' && !Array.isArray(body.payload) ? body.payload : {};
 
-    // Classify dynamic SQL via AST if action is execute_sql
-    const isSql = rawAction === 'execute_sql';
+    // Always inspect SQL AST for execute_sql, any sql_* action, or any payload containing sql
+    const isSql = rawAction === 'execute_sql' || rawAction.startsWith('sql_') || typeof payload.sql === 'string';
     const action = isSql ? classifySqlAction(payload.sql) : rawAction;
     const target = isSql ? clip(payload.sql || body.target, 128) : clip(body.target, 128);
 

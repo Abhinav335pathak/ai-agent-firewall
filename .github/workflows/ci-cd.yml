@@ -50,10 +50,14 @@ jobs:
         run: |
           node --check company-api-server/index.js
           node --check agent-simulator/simulate.js
+          node --check agent-simulator/gemini-sql-agent.js
           node --check firewall-proxy/src/index.js
 
       - name: Test SQL transaction handling
         run: node --test company-api-server/tests/*.test.js
+
+      - name: Test Gemini agent with mocked API responses
+        run: node --test agent-simulator/tests/*.test.js
 
   terraform:
     name: Terraform validate

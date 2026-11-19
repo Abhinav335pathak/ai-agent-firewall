@@ -32,6 +32,7 @@ logs:
 test:
 	cd firewall-proxy && (if [ -f package-lock.json ]; then npm ci; else npm install; fi) && npm run validate-policy && npm test
 	node --test company-api-server/tests/*.test.js
+	node --test agent-simulator/tests/*.test.js
 
 demo:
 	node agent-simulator/simulate.js --url http://localhost

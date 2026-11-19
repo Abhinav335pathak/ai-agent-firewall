@@ -20,6 +20,7 @@ async function gateway(extraEnv = {}) {
   await once(upstream, 'listening');
   const child = spawn(process.execPath, [path.resolve(__dirname, '../../src/index.js')], {
     env: { ...process.env, PORT: '0', AUDIT_DATABASE_URL: '',
+      ALLOW_IN_MEMORY_AUDIT: 'true',
       POLICY_FILE: path.resolve(__dirname, '../../..', 'policy/policies.yaml'),
       COMPANY_API_URL: `http://127.0.0.1:${upstream.address().port}`,
       ADMIN_TOKEN: 'qa-reviewer', INTERNAL_API_TOKEN: 'qa-internal',

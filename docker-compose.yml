@@ -61,7 +61,7 @@ services:
       AGENT_CREDENTIALS: ${AGENT_CREDENTIALS:-}
       POLICY_FILE: /app/policy/policies.yaml
       APPROVAL_TIMEOUT_MS: ${APPROVAL_TIMEOUT_MS:-30000}
-      ALLOW_AUDIT_RESET: ${ALLOW_AUDIT_RESET:-true}
+      ALLOW_AUDIT_RESET: ${ALLOW_AUDIT_RESET:-false}
     volumes:
       # Mount the DIRECTORY (not the single file) so hot-reload keeps working
       # when the file is replaced by a deploy.

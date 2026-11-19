@@ -6,7 +6,7 @@ const same = (a, b) => {
   return left.length === right.length && crypto.timingSafeEqual(left, right);
 };
 
-function createAccess(env = process.env) {
+function createAccess(env = process.env, onDenied = async () => {}) {
   const operators = Object.entries(JSON.parse(env.REVIEWER_TOKENS || '{}'))
     .map(([id, token]) => ({ id, token, role: 'operator' }));
   if (env.ADMIN_TOKEN) operators.push({ id: 'admin', token: env.ADMIN_TOKEN, role: 'operator' });
@@ -31,10 +31,13 @@ function createAccess(env = process.env) {
     return (req, res, next) => {
       const auth = req.get('authorization') || '';
       req.identity = identify(auth.startsWith('Bearer ') ? auth.slice(7) : req.get('x-admin-token'));
-      if (!req.identity) return res.status(401).json({ error: 'Authentication required' });
-      if (role === 'operator' && req.identity.role !== role) return res.status(403).json({ error: 'Operator access required' });
-      if (role === 'metrics' && !['operator', 'monitor'].includes(req.identity.role)) return res.status(403).json({ error: 'Monitoring access required' });
-      if (role === 'any' && req.identity.role === 'monitor') return res.status(403).json({ error: 'Agent or operator access required' });
+      const status = !req.identity ? 401
+        : (role === 'operator' && req.identity.role !== role)
+          || (role === 'metrics' && !['operator', 'monitor'].includes(req.identity.role))
+          || (role === 'any' && req.identity.role === 'monitor') ? 403 : null;
+      if (status) return Promise.resolve(onDenied(req, status)).then(() => {
+        res.status(status).json({ error: status === 401 ? 'Authentication required' : 'Identity does not have access' });
+      }).catch(next);
       return next();
     };
   }

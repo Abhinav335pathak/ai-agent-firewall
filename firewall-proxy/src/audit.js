@@ -52,6 +52,7 @@ class AuditStore {
 
   async init(retries = 20) {
     if (this.memoryOnly) {
+      if (process.env.ALLOW_IN_MEMORY_AUDIT !== 'true') throw new Error('A durable audit database is required; in-memory audit is test-only');
       console.warn('[audit] AUDIT_DATABASE_URL not set - using in-memory audit log only');
       return;
     }
@@ -60,6 +61,7 @@ class AuditStore {
       try {
         await this.pool.query(SCHEMA);
         this.ok = true;
+        await this.recoverPending();
         console.log('[audit] connected, schema ready');
         return;
       } catch (err) {
@@ -72,9 +74,11 @@ class AuditStore {
   }
 
   async record(entry) {
-    this.memory.unshift(entry);
-    if (this.memory.length > 200) this.memory.pop();
-    if (this.memoryOnly) return;
+    if (this.memoryOnly) {
+      this.memory.unshift(entry);
+      if (this.memory.length > 200) this.memory.pop();
+      return;
+    }
     try {
       await this.pool.query(
         `INSERT INTO audit_log
@@ -96,8 +100,23 @@ class AuditStore {
       this.ok = true;
     } catch (err) {
       this.ok = false;
-      console.error('[audit] FAILED TO WRITE AUDIT RECORD:', err.message, JSON.stringify(entry));
+      console.error('[audit] durable write failed:', err.message);
+      const error = new Error('Audit storage unavailable; action cannot be confirmed');
+      error.status = 503;
+      throw error;
     }
+  }
+
+  async recoverPending() {
+    const { rows } = await this.pool.query(`SELECT * FROM (
+      SELECT DISTINCT ON (request_id) * FROM audit_log ORDER BY request_id, seq DESC
+    ) latest WHERE decision IN ('INTERCEPTED', 'PENDING_APPROVAL', 'EXECUTING')`);
+    for (const row of rows) await this.record({
+      id: row.request_id, timestamp: new Date().toISOString(), agent: row.agent,
+      action: row.action, target: row.target, risk: row.risk, policyDecision: row.policy_decision,
+      decision: row.decision === 'EXECUTING' ? 'EXECUTION_UNCONFIRMED' : 'CANCELLED',
+      detail: { ...row.detail, reason: 'process restarted; request will not be executed automatically' },
+    });
   }
 
   async recent(limit = 50) {

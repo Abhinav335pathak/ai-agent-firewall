@@ -34,7 +34,7 @@ const config = {
   auditDbUrl: process.env.AUDIT_DATABASE_URL || '',
   adminToken: process.env.ADMIN_TOKEN || '',
   approvalTimeoutMs: Number(process.env.APPROVAL_TIMEOUT_MS || 30000),
-  allowAuditReset: process.env.ALLOW_AUDIT_RESET !== 'false',
+  allowAuditReset: process.env.ALLOW_AUDIT_RESET === 'true',
   corsOrigin: process.env.CORS_ORIGIN || '*',
 };
 
@@ -61,7 +61,6 @@ function safeEqual(a, b) {
 
 async function main() {
   // ---------------------------------------------------------------- setup
-  const access = createAccess();
   const metrics = new Metrics();
   metrics.describe('firewall_decisions_total', 'Final outcome of every agent action');
   metrics.describe('firewall_approvals_requested_total', 'Actions routed to a human');
@@ -70,6 +69,12 @@ async function main() {
 
   const audit = new AuditStore(config.auditDbUrl);
   await audit.init();
+  const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+  const access = createAccess(process.env, async (req, status) => {
+    await audit.record({ id: crypto.randomUUID(), timestamp: new Date().toISOString(),
+      agent: req.identity?.id || 'anonymous', action: 'access_denied', target: req.path,
+      risk: 'UNKNOWN', policyDecision: 'BLOCK', decision: 'UNAUTHORIZED', detail: { httpStatus: status } });
+  });
 
   const app = express();
   const server = http.createServer(app);
@@ -167,6 +172,7 @@ async function main() {
       decision,
       latencyMs: Number(msSince(base._startNs).toFixed(2)),
       ...extra,
+      detail: { ...base.detail, ...extra.detail },
     };
     delete entry._startNs;
     metrics.inc('firewall_decisions_total', { decision });
@@ -176,12 +182,15 @@ async function main() {
   }
 
   // ------------------------------------------------------- core endpoint
-  app.post('/agent/execute', access.requireIdentity, async (req, res) => {
+  app.post('/agent/execute', access.requireIdentity, wrap(async (req, res) => {
     const startNs = nowNs();
     const body = req.body && typeof req.body === 'object' ? req.body : {};
     const rawAction = body.action;
 
     if (typeof rawAction !== 'string' || !ACTION_RE.test(rawAction)) {
+      await audit.record({ id: crypto.randomUUID(), timestamp: new Date().toISOString(),
+        agent: req.identity.id, action: 'invalid_action', target: null, risk: 'UNKNOWN',
+        policyDecision: 'BLOCK', decision: 'INVALID', detail: { reason: 'invalid action label' } });
       return res.status(400).json({ status: 'INVALID', error: '"action" must be a snake_case string' });
     }
 
@@ -198,7 +207,12 @@ async function main() {
       const tables = req.identity.tables || ['customers', 'cloud_resources', 'iam_roles'];
       const allowedAction = actions.includes(action) || (isSql && actions.includes('execute_sql'));
       const allowedTables = !isSql || action === 'sql_destructive' || referencedTables(payload.sql).every((table) => tables.includes(table));
-      if (!allowedAction || !allowedTables) return res.status(403).json({ status: 'FORBIDDEN', error: 'Outside this agent identity scope' });
+      if (!allowedAction || !allowedTables) {
+        await audit.record({ id: crypto.randomUUID(), timestamp: new Date().toISOString(),
+          agent, action, target, risk: 'UNKNOWN', policyDecision: 'BLOCK', decision: 'FORBIDDEN',
+          detail: { reason: 'outside agent scope', ...(isSql ? { sql: payload.sql } : {}) } });
+        return res.status(403).json({ status: 'FORBIDDEN', error: 'Outside this agent identity scope' });
+      }
     }
 
     // 1) INTERCEPT + 2) CLASSIFY + 3) CHECK POLICY
@@ -217,10 +231,19 @@ async function main() {
       policyDecision: verdict.decision,
       policyEvalMs: Number((evalSeconds * 1000).toFixed(3)),
       _startNs: startNs,
+      detail: { policyVersion: engine.version, ...(isSql ? { sql: payload.sql } : {}) },
     };
+
+    await finalize(base, 'INTERCEPTED');
 
     // 4) DECIDE + ENFORCE
     async function runAndRespond(label) {
+      const current = engine.evaluate(action);
+      if (current.decision === 'BLOCK' || (verdict.decision === 'ALLOW' && current.decision !== 'ALLOW')) {
+        await finalize(base, 'BLOCKED', { detail: { reason: 'policy changed before execution' } });
+        return res.status(403).json({ status: 'BLOCKED', id: base.id, reason: 'Policy changed before execution' });
+      }
+      await finalize(base, 'EXECUTING');
       const result = await execute(action, target, payload);
       if (!result.ok) {
         await finalize(base, 'ERROR', {
@@ -276,13 +299,15 @@ async function main() {
       if (!res.writableFinished) cancelPending(base.id, 'AGENT_DISCONNECTED');
     });
 
+    await finalize(base, 'PENDING_APPROVAL');
     const waiter = requestApproval(pendingEntry);
     metrics.inc('firewall_approvals_requested_total');
     io.emit('approval_required', pendingEntry);
 
     const outcome = await waiter;
 
-    if (outcome.reason === 'RESET') {
+    if (['RESET', 'SHUTDOWN'].includes(outcome.reason)) {
+      await finalize(base, 'CANCELLED', { detail: { reason: outcome.reason } });
       return res.status(409).json({ status: 'CANCELLED', id: base.id });
     }
     if (outcome.reason === 'AGENT_DISCONNECTED') {
@@ -303,8 +328,9 @@ async function main() {
       });
       return res.status(403).json({ status: 'REJECTED', id: base.id, reason: 'Rejected by a human reviewer' });
     }
+    base.detail.reviewedBy = outcome.by;
     return runAndRespond('APPROVED_BY_HUMAN');
-  });
+  }));
 
   // ---------------------------------------------------- approval endpoints
   app.post('/approval/:id', requireAdmin, (req, res) => {
@@ -329,26 +355,26 @@ async function main() {
 
   app.get('/policy', requireAdmin, (req, res) => res.json({ ...engine.summary(), rules: engine.rulesList() }));
 
-  app.get('/logs', requireAdmin, async (req, res) => {
+  app.get('/logs', requireAdmin, wrap(async (req, res) => {
     const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 500);
     res.json(await audit.recent(limit));
-  });
+  }));
 
   app.get('/metrics', access.requireMetrics, (req, res) => {
     res.type('text/plain; version=0.0.4').send(metrics.render({ firewall_pending_approvals: pending.size }));
   });
 
-  app.get('/company-status.json', requireAdmin, async (req, res) => {
+  app.get('/company-status.json', requireAdmin, wrap(async (req, res) => {
     const r = await companyRequest('GET', '/status');
     res.status(r.ok ? 200 : 502).json(r.ok ? r.data : { error: r.data.error || 'company api unreachable' });
-  });
+  }));
 
   app.get('/company-status', (req, res) => res.sendFile(path.join(__dirname, 'public', 'dashboard.html')));
   app.get('/agent-console', (req, res) => res.sendFile(path.join(__dirname, 'public', 'agent-console.html')));
   app.get('/', (req, res) => res.redirect('/company-status'));
 
   // ------------------------------------------------------------- demo reset
-  app.post('/admin/reset', requireAdmin, async (req, res) => {
+  app.post('/admin/reset', requireAdmin, wrap(async (req, res) => {
     for (const id of [...pending.keys()]) {
       const p = pending.get(id);
       pending.delete(id);
@@ -356,13 +382,16 @@ async function main() {
     }
     if (config.allowAuditReset) await audit.reset();
     const r = await companyRequest('POST', '/admin/reset');
+    await audit.record({ id: crypto.randomUUID(), timestamp: new Date().toISOString(), agent: req.identity.id,
+      action: 'admin_reset', target: 'demo', risk: 'HIGH', policyDecision: 'REQUIRE_APPROVAL',
+      decision: r.ok ? 'RESET_COMPLETED' : 'RESET_FAILED', detail: { reviewedBy: req.identity.id, auditCleared: config.allowAuditReset } });
     io.emit('feed_reset');
     res.status(r.ok ? 200 : 502).json({
       status: r.ok ? 'RESET_OK' : 'RESET_FAILED',
       auditCleared: config.allowAuditReset,
       company: r.data,
     });
-  });
+  }));
 
   // ------------------------------------------------------- error handling
   app.use((req, res) => res.status(404).json({ error: 'not found' }));
@@ -382,7 +411,7 @@ async function main() {
     next();
   });
   io.on('connection', async (socket) => {
-    socket.emit('history', await audit.recent(50));
+    try { socket.emit('history', await audit.recent(50)); } catch { socket.disconnect(true); return; }
     socket.emit('pending', pendingList());
 
     socket.on('approval_decision', (msg, ack) => {
@@ -397,6 +426,7 @@ async function main() {
 
   const shutdown = (signal) => {
     console.log(`[firewall] ${signal} received, shutting down`);
+    for (const id of [...pending.keys()]) cancelPending(id, 'SHUTDOWN');
     io.close();
     server.close(async () => {
       await audit.close().catch(() => {});

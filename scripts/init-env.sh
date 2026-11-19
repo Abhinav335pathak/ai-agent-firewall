@@ -2,6 +2,7 @@
 # Creates ~/app/.env with strong random secrets on the FIRST deploy only.
 # Secrets are generated on the server, so they never appear in git, CI logs or Terraform state.
 set -euo pipefail
+umask 077
 cd "$(dirname "$0")/.."
 
 if [ -f .env ]; then
@@ -12,7 +13,10 @@ if [ -f .env ]; then
   if ! grep -q '^METRICS_TOKEN=.' .env; then
     printf '\nMETRICS_TOKEN=%s\n' "$(openssl rand -hex 24)" >> .env
   fi
-  echo "[init-env] .env already exists - leaving it untouched"
+  # Production never permits wiping its audit history through the demo reset.
+  sed 's/^ALLOW_AUDIT_RESET=.*/ALLOW_AUDIT_RESET=false/' .env > .env.secure
+  mv .env.secure .env
+  echo "[init-env] existing credentials preserved; secure defaults applied"
   exit 0
 fi
 
@@ -29,7 +33,7 @@ ADMIN_TOKEN=$(openssl rand -hex 16)
 AGENT_TOKEN=$(openssl rand -hex 24)
 METRICS_TOKEN=$(openssl rand -hex 24)
 APPROVAL_TIMEOUT_MS=30000
-ALLOW_AUDIT_RESET=true
+ALLOW_AUDIT_RESET=false
 EOF
 
 echo "[init-env] created .env with fresh random secrets"

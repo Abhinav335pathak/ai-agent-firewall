@@ -16,6 +16,7 @@ const { executeSql, prepareSqlRole } = require('./sqlExecutor');
 
 const PORT = Number(process.env.PORT || 4000);
 const INTERNAL_TOKEN = process.env.INTERNAL_API_TOKEN || '';
+if (!INTERNAL_TOKEN || !process.env.DATABASE_URL) throw new Error('Internal credential and database URL are required');
 const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 5 });
 const SEED_SQL = fs.readFileSync(path.join(__dirname, 'seed.sql'), 'utf8');
 
@@ -73,7 +74,6 @@ app.get(
 
 // Everything below requires the firewall's internal credential.
 app.use((req, res, next) => {
-  if (!INTERNAL_TOKEN) return next();
   if (safeEqual(req.get('x-internal-token') || '', INTERNAL_TOKEN)) return next();
   return res.status(401).json({ error: 'internal credential required' });
 });

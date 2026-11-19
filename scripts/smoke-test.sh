@@ -49,7 +49,12 @@ if echo "$status_json" | grep -q 'Alice Sharma'; then pass "production customers
 
 # 4. the data tier is not exposed to the outside world
 for port in 3000 4000 5432; do
-  if command -v timeout >/dev/null && timeout 3 bash -c "exec 3<>/dev/tcp/$HOST/$port" 2>/dev/null; then
+  if ! command -v timeout >/dev/null && ! command -v node >/dev/null; then
+    fail "cannot verify port $port: install timeout or Node.js"
+    continue
+  fi
+  if { command -v timeout >/dev/null && timeout 3 bash -c "exec 3<>/dev/tcp/$HOST/$port" 2>/dev/null; } ||
+     { ! command -v timeout >/dev/null && node -e 'const s=require("net").connect({host:process.argv[1],port:Number(process.argv[2])});s.setTimeout(3000);s.on("connect",()=>{s.destroy();process.exit(0)});s.on("error",()=>process.exit(1));s.on("timeout",()=>{s.destroy();process.exit(1)});' "$HOST" "$port"; }; then
     fail "port $port is reachable from outside - it must be closed"
   else
     pass "port $port is not exposed"

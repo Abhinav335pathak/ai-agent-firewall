@@ -47,11 +47,7 @@ jobs:
         run: npm test
 
       - name: Syntax-check the other services
-        run: |
-          node --check company-api-server/index.js
-          node --check agent-simulator/simulate.js
-          node --check agent-simulator/gemini-sql-agent.js
-          node --check firewall-proxy/src/index.js
+        run: make check
 
       - name: Test SQL transaction handling
         run: node --test company-api-server/tests/*.test.js
@@ -78,6 +74,8 @@ jobs:
     name: Integration test (real containers)
     needs: test
     runs-on: ubuntu-latest
+    env:
+      COMPOSE_PROJECT_NAME: ai-agent-firewall-security-ci
     steps:
       - uses: actions/checkout@v4
 
@@ -108,6 +106,13 @@ jobs:
 
       - name: Prove the agent is network-isolated from the data tier
         run: ./scripts/prove-isolation.sh
+
+      - name: Verify authenticated execution, crash recovery and audit outages
+        env:
+          ADMIN_TOKEN: demo-admin-token
+          AGENT_TOKEN: demo-agent-token
+          ALLOW_SQL_TEST_WRITES: "true"
+        run: node scripts/security-smoke-test.js http://localhost ai-agent-firewall-security-ci
 
       - name: Dump logs on failure
         if: failure()

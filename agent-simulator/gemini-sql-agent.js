@@ -85,6 +85,7 @@ function createAgent({
             `https://generativelanguage.googleapis.com/v1beta/models/${currentModel}:generateContent`,
             {
               method: 'POST',
+              signal: AbortSignal.timeout(30000),
               headers: {
                 'content-type': 'application/json', 'idempotency-key': randomUUID(),
                 'x-goog-api-key': apiKey,
@@ -173,7 +174,7 @@ function createAgent({
       if (onSql) onSql(sql, gen.model);
 
       const fwRes = await fetchImpl(`${baseUrl}/agent/execute`, {
-        method: 'POST',
+        method: 'POST', signal: AbortSignal.timeout(65000),
         headers: { 'content-type': 'application/json', 'idempotency-key': randomUUID(), authorization: `Bearer ${process.env.AGENT_TOKEN || ''}` },
         body: JSON.stringify({
           agentId,
@@ -247,13 +248,16 @@ function createAgent({
 
 async function runCli() {
   const { values: opts } = parseArgs({ options: { url: { type: 'string' } } });
-  const BASE = (opts.url || process.env.FIREWALL_URL || 'http://3.108.14.197').replace(/\/$/, '');
+  const BASE = (opts.url || process.env.FIREWALL_URL || 'http://localhost').replace(/\/$/, '');
 
   let turn;
   try {
+    if (!process.env.AGENT_TOKEN) throw new Error('AGENT_TOKEN is required');
     turn = createAgent({
       apiKey: process.env.GEMINI_API_KEY,
       firewallUrl: BASE,
+      model: process.env.GEMINI_MODEL || DEFAULT_MODEL,
+      ...(process.env.GEMINI_FALLBACK_MODELS === undefined ? {} : { fallbackModels: process.env.GEMINI_FALLBACK_MODELS.split(',').map((s) => s.trim()).filter(Boolean) }),
       onSql: (sql, model) => {
         console.log(`\n🧠 [Gemini SQL | ${model}]  ${sql}`);
         console.log(`🛡️  [Firewall]    Parsing SQL AST & evaluating policies.yaml...`);

@@ -1,4 +1,4 @@
-.PHONY: help setup up down logs test demo demo-auto reset isolation smoke clean
+.PHONY: help setup up down logs test check demo demo-auto reset isolation smoke clean
 
 help:
 	@echo "make setup      create .env from .env.example (first time only)"
@@ -33,6 +33,10 @@ test:
 	cd firewall-proxy && (if [ -f package-lock.json ]; then npm ci; else npm install; fi) && npm run validate-policy && npm test
 	node --test company-api-server/tests/*.test.js
 	node --test agent-simulator/tests/*.test.js
+
+check:
+	node scripts/check-js.js
+	bash -n scripts/init-env.sh scripts/deploy-remote.sh scripts/smoke-test.sh scripts/prove-isolation.sh
 
 demo:
 	AGENT_TOKEN=$$(sed -n 's/^AGENT_TOKEN=//p' .env) node agent-simulator/simulate.js --url http://localhost

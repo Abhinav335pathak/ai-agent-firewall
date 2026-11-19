@@ -34,10 +34,8 @@ const config = {
   internalToken: process.env.INTERNAL_API_TOKEN || '',
   policyFile: process.env.POLICY_FILE || '/app/policy/policies.yaml',
   auditDbUrl: process.env.AUDIT_DATABASE_URL || '',
-  adminToken: process.env.ADMIN_TOKEN || '',
   approvalTimeoutMs: Number(process.env.APPROVAL_TIMEOUT_MS || 30000),
   allowAuditReset: process.env.ALLOW_AUDIT_RESET === 'true',
-  corsOrigin: process.env.CORS_ORIGIN || '*',
 };
 
 // What each action does on the company side. The agent never sees these URLs.
@@ -54,12 +52,6 @@ const ACTION_RE = /^[a-z][a-z0-9_]{0,63}$/;
 const nowNs = () => process.hrtime.bigint();
 const msSince = (startNs) => Number(nowNs() - startNs) / 1e6;
 const clip = (v, n) => (v == null ? null : String(v).slice(0, n));
-
-function safeEqual(a, b) {
-  const A = Buffer.from(String(a));
-  const B = Buffer.from(String(b));
-  return A.length === B.length && crypto.timingSafeEqual(A, B);
-}
 
 async function main() {
   // ---------------------------------------------------------------- setup
@@ -217,7 +209,7 @@ async function main() {
     const target = isSql ? clip(payload.sql || body.target, 128) : clip(body.target, 128);
 
     if (req.identity.role === 'agent') {
-      const actions = req.identity.actions || ['read_logs', 'spin_up_dev_vm', 'change_iam_permissions', 'execute_sql'];
+      const actions = req.identity.actions || ['read_logs', 'spin_up_dev_vm', 'change_iam_permissions', 'delete_prod_db', 'execute_sql'];
       const tables = req.identity.tables || ['customers', 'cloud_resources', 'iam_roles'];
       const allowedAction = actions.includes(action) || (isSql && actions.includes('execute_sql'));
       const allowedTables = !isSql || action === 'sql_destructive' || referencedTables(payload.sql).every((table) => tables.includes(table));
@@ -242,6 +234,12 @@ async function main() {
       return res.status(400).json({ status: 'INVALID', error: 'Idempotency-Key header (8-128 safe characters) is required' });
     }
     const reservation = await requestsStore.reserve(agent, key, { action, target, payload });
+    if (reservation.conflict || reservation.pending || reservation.replay) {
+      await audit.record({ id: crypto.randomUUID(), timestamp: new Date().toISOString(), agent, action, target,
+        risk: verdict.risk, policyDecision: verdict.decision,
+        decision: reservation.replay ? 'REPLAYED' : 'DUPLICATE_REJECTED',
+        detail: { originalRequestId: reservation.id || reservation.replay?.body?.id, policyVersion: engine.version } });
+    }
     if (reservation.conflict) return res.status(409).json({ status: 'CONFLICT', error: 'Idempotency key already belongs to a different request' });
     if (reservation.replay) return res.status(reservation.replay.status).json(reservation.replay.body);
     if (reservation.pending) return res.status(409).json({ status: reservation.interrupted ? 'EXECUTION_UNCONFIRMED' : 'IN_PROGRESS', id: reservation.id, reason: 'Do not submit again with a new key; inspect the audit trail first' });
@@ -329,6 +327,7 @@ async function main() {
 
     await finalize(base, 'PENDING_APPROVAL');
     const waiter = requestApproval(pendingEntry);
+    if (res.destroyed) cancelPending(base.id, 'AGENT_DISCONNECTED');
     metrics.inc('firewall_approvals_requested_total');
     io.emit('approval_required', pendingEntry);
 
@@ -351,6 +350,7 @@ async function main() {
       });
       return respond(408, { status: 'TIMED_OUT', id: base.id, reason: 'No human approval in time - auto-denied' });
     }
+    if (outcome.by) base.detail.reviewedBy = outcome.by;
     if (!outcome.approved) {
       await finalize(base, 'REJECTED_BY_HUMAN', {
         detail: { decidedBy: outcome.by || null, ...(isSql ? { sql: payload.sql } : {}) },
@@ -374,8 +374,9 @@ async function main() {
 
   // ------------------------------------------------------------ read APIs
   app.get('/health', (req, res) =>
-    res.json({
-      status: 'ok',
+    res.status(audit.ok ? 200 : 503).json({
+      status: audit.ok ? 'ok' : 'degraded',
+      release: process.env.RELEASE_SHA || 'local',
       policy: engine.summary(),
       auditDb: audit.ok,
       pendingApprovals: pending.size,
@@ -427,11 +428,18 @@ async function main() {
   app.use((req, res) => res.status(404).json({ error: 'not found' }));
   // eslint-disable-next-line no-unused-vars
   app.use((err, req, res, next) => {
+    const send = (status, error) => {
+      if (status === 503) audit.ok = false;
+      if (!res.headersSent) res.status(status).json({ status: status === 503 ? 'UNAVAILABLE' : 'ERROR', error });
+    };
     if (err.type === 'entity.parse.failed' || err.type === 'entity.too.large') {
-      return res.status(400).json({ error: 'invalid request body' });
+      return audit.record({ id: crypto.randomUUID(), timestamp: new Date().toISOString(),
+        agent: 'unverified', action: 'invalid_request', target: req.path, risk: 'UNKNOWN',
+        policyDecision: 'BLOCK', decision: 'INVALID', detail: { reason: 'invalid request body' } })
+        .then(() => send(400, 'invalid request body')).catch(() => send(503, 'Audit storage unavailable'));
     }
-    console.error('[error]', err);
-    return res.status(500).json({ error: 'internal error' });
+    console.error('[error]', err.message);
+    send(err.status || 500, err.status === 503 ? err.message : 'internal error');
   });
 
   // ------------------------------------------------------ realtime (Android)

@@ -45,9 +45,10 @@ class AuditStore {
     this.memoryOnly = !connectionString;
     this.pool = this.memoryOnly
       ? null
-      : new Pool({ connectionString, max: 5, connectionTimeoutMillis: 3000 });
+      : new Pool({ connectionString, max: 5, connectionTimeoutMillis: 3000, statement_timeout: 5000, query_timeout: 6000 });
     this.ok = this.memoryOnly;
     this.memory = []; // newest first, capped
+    this.pool?.on('error', () => { this.ok = false; });
   }
 
   async init(retries = 20) {
@@ -140,8 +141,8 @@ class AuditStore {
         detail: r.detail,
       }));
     } catch (err) {
-      console.error('[audit] read failed, serving memory buffer:', err.message);
-      return this.memory.slice(0, limit);
+      this.ok = false;
+      const error = new Error('Audit history unavailable'); error.status = 503; throw error;
     }
   }
 

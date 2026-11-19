@@ -43,10 +43,10 @@ if (AUTO && !TOKEN) {
 
 // ciApprove: what the robot reviewer does in --auto-approve mode (null = nothing to decide)
 const SCENARIOS = [
-  { id: 1, name: 'Read server logs', action: 'read_logs', target: 'prod-web-server-01', expect: 200, ciApprove: null },
-  { id: 2, name: 'Spin up a dev server', action: 'spin_up_dev_vm', target: 'dev', expect: 200, ciApprove: true },
-  { id: 3, name: 'Change admin permissions', action: 'change_iam_permissions', target: 'ai-agent', expect: 403, ciApprove: false },
-  { id: 4, name: 'Delete the production database', action: 'delete_prod_db', target: 'company_prod.customers', expect: 403, ciApprove: null },
+  { id: 1, name: 'Read server logs', action: 'read_logs', target: 'prod-web-server-01', expect: 200, expectLabel: 'ALLOWED', ciApprove: null },
+  { id: 2, name: 'Spin up a dev server', action: 'spin_up_dev_vm', target: 'dev', expect: 200, expectLabel: 'APPROVED', ciApprove: true },
+  { id: 3, name: 'Change admin permissions', action: 'change_iam_permissions', target: 'ai-agent', expect: 403, expectLabel: 'REJECTED', ciApprove: false },
+  { id: 4, name: 'Delete the production database', action: 'delete_prod_db', target: 'company_prod.customers', expect: 403, expectLabel: 'BLOCKED', ciApprove: null },
 ];
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -103,7 +103,7 @@ async function run(s) {
 
   const label = data.status || 'UNKNOWN';
   console.log(`    ${ICON[label] || '❔'} firewall says: ${label} (HTTP ${res.status})${data.reason ? ' - ' + data.reason : ''}`);
-  return { s, ok: res.status === s.expect, status: res.status };
+  return { s, ok: res.status === s.expect && label === s.expectLabel, status: res.status };
 }
 
 (async () => {

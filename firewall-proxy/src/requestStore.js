@@ -8,7 +8,13 @@ function canonical(value) {
 }
 
 class RequestStore {
-  constructor(pool) { this.pool = pool; this.memory = new Map(); }
+  constructor(pool) {
+    this.pool = pool ? { query: async (...args) => {
+      try { return await pool.query(...args); }
+      catch { const error = new Error('Request tracking unavailable; inspect audit before retrying'); error.status = 503; throw error; }
+    } } : null;
+    this.memory = new Map();
+  }
   async init() {
     if (!this.pool) return;
     await this.pool.query(`CREATE TABLE IF NOT EXISTS action_requests (

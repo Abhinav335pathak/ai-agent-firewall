@@ -10,4 +10,4 @@ BASE="${1:-http://localhost}"
 
 curl -fsS -X POST "${BASE%/}/admin/reset" -H "Authorization: Bearer ${ADMIN_TOKEN}"
 echo
-echo "Reset done. Company DB restored, audit trail and feed cleared."
+echo "Reset done. Company DB restored. Production audit history is preserved; local audit clearing requires ALLOW_AUDIT_RESET=true."

@@ -12,6 +12,7 @@ const path = require('path');
 const crypto = require('crypto');
 const express = require('express');
 const { Pool } = require('pg');
+const { executeSql } = require('./sqlExecutor');
 
 const PORT = Number(process.env.PORT || 4000);
 const INTERNAL_TOKEN = process.env.INTERNAL_API_TOKEN || '';
@@ -78,6 +79,11 @@ app.use((req, res, next) => {
 
 app.get('/status', wrap(async (req, res) => res.json(await snapshot())));
 
+// This endpoint is private and inherits the firewall's internal-token check.
+app.post('/sql/execute', wrap(async (req, res) => {
+  res.json(await executeSql(pool, req.body?.payload?.sql, req.body?.sqlAction));
+}));
+
 app.post('/logs/read', (req, res) => {
   const now = Date.now();
   const line = (ageSec, text) => `${new Date(now - ageSec * 1000).toISOString()} ${text}`;
@@ -133,7 +139,7 @@ app.use((req, res) => res.status(404).json({ error: 'not found' }));
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {
   console.error('[company-api] error:', err.message);
-  res.status(500).json({ error: err.message });
+  res.status(err.status || 500).json({ error: err.message });
 });
 
 ensureSeeded()

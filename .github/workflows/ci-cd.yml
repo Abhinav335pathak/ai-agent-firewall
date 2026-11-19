@@ -52,6 +52,9 @@ jobs:
           node --check agent-simulator/simulate.js
           node --check firewall-proxy/src/index.js
 
+      - name: Test SQL transaction handling
+        run: node --test company-api-server/tests/*.test.js
+
   terraform:
     name: Terraform validate
     runs-on: ubuntu-latest
@@ -90,6 +93,12 @@ jobs:
 
       - name: Smoke test + verify the database state after the demo
         run: ./scripts/smoke-test.sh http://localhost --after-demo
+
+      - name: Verify SQL enforcement against the disposable CI database
+        env:
+          ADMIN_TOKEN: demo-admin-token
+          ALLOW_SQL_TEST_WRITES: "true"
+        run: node scripts/sql-smoke-test.js http://localhost
 
       - name: Prove the agent is network-isolated from the data tier
         run: ./scripts/prove-isolation.sh

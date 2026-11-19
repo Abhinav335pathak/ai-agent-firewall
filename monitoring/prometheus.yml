@@ -4,5 +4,7 @@ global:
 scrape_configs:
   - job_name: firewall-proxy
     metrics_path: /metrics
+    authorization:
+      credentials_file: /tmp/firewall-metrics-token
     static_configs:
       - targets: ["firewall-proxy:3000"]

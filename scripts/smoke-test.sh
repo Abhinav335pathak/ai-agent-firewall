@@ -13,13 +13,19 @@ BASE="${BASE%/}"
 MODE="${2:-}"
 HOST="$(echo "$BASE" | sed -E 's#^https?://##; s#[:/].*$##')"
 FAILS=0
+if [ -f .env ]; then
+  ADMIN_TOKEN="${ADMIN_TOKEN:-$(sed -n 's/^ADMIN_TOKEN=//p' .env)}"
+  AGENT_TOKEN="${AGENT_TOKEN:-$(sed -n 's/^AGENT_TOKEN=//p' .env)}"
+fi
+ADMIN_TOKEN="${ADMIN_TOKEN:-}"
+AGENT_TOKEN="${AGENT_TOKEN:-}"
 
 pass() { echo "PASS  $*"; }
 fail() { echo "FAIL  $*" >&2; FAILS=$((FAILS + 1)); }
 
 post_status() { # post_status <action>  -> prints HTTP status
   curl -s -o /dev/null -w '%{http_code}' --max-time 20 -X POST "$BASE/agent/execute" \
-    -H 'Content-Type: application/json' -d "{\"agentId\":\"smoke-test\",\"action\":\"$1\"}"
+    -H "Authorization: Bearer $AGENT_TOKEN" -H 'Content-Type: application/json' -d "{\"agentId\":\"smoke-test\",\"action\":\"$1\"}"
 }
 
 echo "Smoke test against $BASE"
@@ -37,7 +43,7 @@ if [ "$ready" = 1 ]; then pass "firewall /health is up"; else fail "firewall /he
 [ "$(post_status delete_prod_db)" = "403" ] && pass "delete_prod_db is BLOCKED (403)" || fail "delete_prod_db must return 403"
 
 # 3. the real database is intact
-status_json="$(curl -fsS --max-time 10 "$BASE/company-status.json" || true)"
+status_json="$(curl -fsS --max-time 10  -H "Authorization: Bearer $ADMIN_TOKEN" "$BASE/company-status.json" || true)"
 if echo "$status_json" | grep -q 'Alice Sharma'; then pass "production customers are intact"; else fail "customers table missing or empty"; fi
 
 # 4. the data tier is not exposed to the outside world

@@ -42,7 +42,8 @@ async function gateway(extraEnv = {}) {
       const res = await fetch(base + url, { method: body === undefined ? 'GET' : 'POST',
         headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}), ...extraHeaders },
         body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(5000) });
-      return { status: res.status, data: await res.json() };
+      const text = await res.text();
+      return { status: res.status, data: res.headers.get('content-type')?.includes('application/json') ? JSON.parse(text) : text };
     },
     async close() {
       if (child.exitCode === null) { child.kill('SIGTERM'); await once(child, 'exit'); }

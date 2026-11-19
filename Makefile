@@ -35,10 +35,10 @@ test:
 	node --test agent-simulator/tests/*.test.js
 
 demo:
-	node agent-simulator/simulate.js --url http://localhost
+	AGENT_TOKEN=$$(sed -n 's/^AGENT_TOKEN=//p' .env) node agent-simulator/simulate.js --url http://localhost
 
 demo-auto:
-	ADMIN_TOKEN=$$(grep '^ADMIN_TOKEN=' .env | cut -d= -f2) node agent-simulator/simulate.js --url http://localhost --auto-approve --assert --delay 500
+	AGENT_TOKEN=$$(sed -n 's/^AGENT_TOKEN=//p' .env) ADMIN_TOKEN=$$(sed -n 's/^ADMIN_TOKEN=//p' .env) node agent-simulator/simulate.js --url http://localhost --auto-approve --assert --delay 500
 
 reset:
 	ADMIN_TOKEN=$$(grep '^ADMIN_TOKEN=' .env | cut -d= -f2) ./scripts/reset.sh http://localhost

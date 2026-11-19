@@ -5,6 +5,13 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 if [ -f .env ]; then
+  # Upgrade existing deployments without rotating their current credentials.
+  if ! grep -q '^AGENT_TOKEN=.' .env; then
+    printf '\nAGENT_TOKEN=%s\n' "$(openssl rand -hex 24)" >> .env
+  fi
+  if ! grep -q '^METRICS_TOKEN=.' .env; then
+    printf '\nMETRICS_TOKEN=%s\n' "$(openssl rand -hex 24)" >> .env
+  fi
   echo "[init-env] .env already exists - leaving it untouched"
   exit 0
 fi
@@ -19,6 +26,8 @@ COMPANY_DB_PASSWORD=$(openssl rand -hex 16)
 AUDIT_DB_PASSWORD=$(openssl rand -hex 16)
 INTERNAL_API_TOKEN=$(openssl rand -hex 24)
 ADMIN_TOKEN=$(openssl rand -hex 16)
+AGENT_TOKEN=$(openssl rand -hex 24)
+METRICS_TOKEN=$(openssl rand -hex 24)
 APPROVAL_TIMEOUT_MS=30000
 ALLOW_AUDIT_RESET=true
 EOF

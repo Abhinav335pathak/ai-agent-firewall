@@ -173,7 +173,7 @@ function createAgent({
 
       const fwRes = await fetchImpl(`${baseUrl}/agent/execute`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${process.env.AGENT_TOKEN || ''}` },
         body: JSON.stringify({
           agentId,
           action: 'execute_sql',

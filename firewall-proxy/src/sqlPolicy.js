@@ -41,3 +41,15 @@ function classifySqlAction(sql) {
 }
 
 module.exports = { classifySqlAction };
+
+function referencedTables(sql) {
+  const tables = new Set();
+  function walk(node) {
+    if (!node || typeof node !== 'object') return;
+    if (typeof node.table === 'string' && node.type !== 'column_ref') tables.add(node.table);
+    Object.values(node).forEach(walk);
+  }
+  walk(parser.astify(sql, { database: 'PostgresQL' }));
+  return [...tables];
+}
+module.exports.referencedTables = referencedTables;

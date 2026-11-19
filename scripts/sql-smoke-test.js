@@ -8,7 +8,7 @@ const TOKEN = process.env.ADMIN_TOKEN;
 const AGENT = `sql-test-${Date.now()}`;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function request(path, body, token) {
+async function request(path, body, token = TOKEN) {
   const response = await fetch(BASE + path, {
     method: body ? 'POST' : 'GET',
     headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
@@ -17,11 +17,11 @@ async function request(path, body, token) {
   });
   return { status: response.status, data: await response.json() };
 }
-const execute = (sql, action = 'execute_sql') => request('/agent/execute', { agentId: AGENT, action, payload: { sql } });
+const execute = (sql, action = 'execute_sql') => request('/agent/execute', { agentId: AGENT, action, payload: { sql } }, process.env.AGENT_TOKEN);
 
 async function pendingRequest() {
   for (let i = 0; i < 100; i++) {
-    const pending = (await request('/approvals/pending')).data.find((entry) => entry.agent === AGENT);
+    const pending = (await request('/approvals/pending')).data.find((entry) => entry.agent === 'demo-agent');
     if (pending) return pending;
     await sleep(25);
   }
@@ -33,7 +33,7 @@ async function reviewed(sql, approved, action = 'execute_sql') {
   const pending = await pendingRequest();
   assert.equal(pending.action, 'sql_write');
   assert.equal(pending.sql, sql);
-  assert.equal((await request(`/approval/${pending.id}`, { approved })).status, 401);
+  assert.equal((await request(`/approval/${pending.id}`, { approved }, '')).status, 401);
   assert.equal((await request(`/approval/${pending.id}`, { approved }, TOKEN)).status, 200);
   return result;
 }
@@ -86,7 +86,7 @@ async function main() {
   assert.equal(after.data.data.rows[0].plan, 'Pro');
   const total = await execute('SELECT COUNT(*) AS total FROM customers');
   assert.equal(Number(total.data.data.rows[0].total), count + 1);
-  const logs = (await request('/logs?limit=100')).data.filter((entry) => entry.agent === AGENT);
+  const logs = (await request('/logs?limit=100')).data.filter((entry) => entry.agent === 'demo-agent');
   for (const decision of ['ALLOWED', 'APPROVED_BY_HUMAN', 'REJECTED_BY_HUMAN', 'TIMED_OUT', 'BLOCKED', 'ERROR']) {
     assert.ok(logs.some((entry) => entry.decision === decision && typeof entry.detail?.sql === 'string'), `Missing SQL audit: ${decision}`);
   }

@@ -29,7 +29,7 @@ const DELAY_MS = Number(opts.delay ?? process.env.STEP_DELAY_MS ?? 3000);
 const TOKEN = process.env.ADMIN_TOKEN || '';
 const AUTO = opts['auto-approve'];
 const ASSERT = opts.assert;
-const AGENT = 'DemoAgent-01';
+const AGENT = process.env.AGENT_ID || 'demo-agent';
 
 if (ASSERT && !AUTO) {
   console.error('--assert only makes sense with --auto-approve (a human would decide otherwise)');
@@ -54,7 +54,7 @@ const ICON = { ALLOWED: '✅', APPROVED: '✅', BLOCKED: '⛔', REJECTED: '🚫'
 /** Plays the human reviewer for CI: waits for the pending request, then approves/rejects it. */
 async function robotReviewer(action, approved, state) {
   while (!state.done) {
-    const list = await fetch(`${BASE}/approvals/pending`).then((r) => r.json()).catch(() => []);
+    const list = await fetch(`${BASE}/approvals/pending`, { headers: { authorization: `Bearer ${TOKEN}` } }).then((r) => r.json()).catch(() => []);
     const hit = list.find((e) => e.action === action && e.agent === AGENT);
     if (hit) {
       const r = await fetch(`${BASE}/approval/${hit.id}`, {
@@ -87,7 +87,7 @@ async function run(s) {
   try {
     res = await fetch(`${BASE}/agent/execute`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${process.env.AGENT_TOKEN || ''}` },
       body: JSON.stringify({ agentId: AGENT, action: s.action, target: s.target, payload: {} }),
       signal: AbortSignal.timeout(60000),
     });

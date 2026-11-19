@@ -93,6 +93,7 @@ jobs:
       - name: Run the 4 agent scenarios (robot reviewer approves VM, rejects IAM)
         env:
           ADMIN_TOKEN: demo-admin-token
+          AGENT_TOKEN: demo-agent-token
         run: node agent-simulator/simulate.js --url http://localhost --auto-approve --assert --delay 500
 
       - name: Smoke test + verify the database state after the demo
@@ -101,6 +102,7 @@ jobs:
       - name: Verify SQL enforcement against the disposable CI database
         env:
           ADMIN_TOKEN: demo-admin-token
+          AGENT_TOKEN: demo-agent-token
           ALLOW_SQL_TEST_WRITES: "true"
         run: node scripts/sql-smoke-test.js http://localhost
 

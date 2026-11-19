@@ -55,6 +55,10 @@ services:
       INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?set INTERNAL_API_TOKEN in .env}
       AUDIT_DATABASE_URL: postgres://audit:${AUDIT_DB_PASSWORD:?set AUDIT_DB_PASSWORD in .env}@audit-db:5432/audit
       ADMIN_TOKEN: ${ADMIN_TOKEN:?set ADMIN_TOKEN in .env}
+      AGENT_TOKEN: ${AGENT_TOKEN:?set AGENT_TOKEN in .env}
+      METRICS_TOKEN: ${METRICS_TOKEN:?set METRICS_TOKEN in .env}
+      REVIEWER_TOKENS: ${REVIEWER_TOKENS:-}
+      AGENT_CREDENTIALS: ${AGENT_CREDENTIALS:-}
       POLICY_FILE: /app/policy/policies.yaml
       APPROVAL_TIMEOUT_MS: ${APPROVAL_TIMEOUT_MS:-30000}
       ALLOW_AUDIT_RESET: ${ALLOW_AUDIT_RESET:-true}
@@ -126,6 +130,7 @@ services:
     environment:
       FIREWALL_URL: http://firewall-proxy:3000
       ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+      AGENT_TOKEN: ${AGENT_TOKEN:?set AGENT_TOKEN in .env}
     networks: [public_net] # NOT on the company network: it has no route to the data
 
 networks:

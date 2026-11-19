@@ -23,7 +23,8 @@ const { PolicyEngine } = require('./policyEngine');
 const { AuditStore } = require('./audit');
 const { Metrics } = require('./metrics');
 
-const { classifySqlAction } = require('./sqlPolicy');
+const { classifySqlAction, referencedTables } = require('./sqlPolicy');
+const { createAccess } = require('./access');
 
 const config = {
   port: Number(process.env.PORT || 3000),
@@ -60,6 +61,7 @@ function safeEqual(a, b) {
 
 async function main() {
   // ---------------------------------------------------------------- setup
+  const access = createAccess();
   const metrics = new Metrics();
   metrics.describe('firewall_decisions_total', 'Final outcome of every agent action');
   metrics.describe('firewall_approvals_requested_total', 'Actions routed to a human');
@@ -83,22 +85,20 @@ async function main() {
   console.log(`[policy] loaded version ${engine.version} (${engine.rules.size} rules)`);
   setInterval(() => engine.checkAndReload(), 2000).unref();
 
-  if (!config.adminToken) {
-    console.warn('[security] ADMIN_TOKEN is empty - approval and reset endpoints are UNPROTECTED');
-  }
-
-  // ---------------------------------------------------------- middleware
   app.disable('x-powered-by');
-  app.use(cors({ origin: config.corsOrigin }));
+  app.use(cors({ origin: false }));
   app.use(express.json({ limit: '10kb' }));
-
-  function requireAdmin(req, res, next) {
-    if (!config.adminToken) return next();
-    const auth = req.get('authorization') || '';
-    const token = auth.startsWith('Bearer ') ? auth.slice(7) : req.get('x-admin-token') || '';
-    if (safeEqual(token, config.adminToken)) return next();
-    return res.status(401).json({ error: 'unauthorized' });
-  }
+  const requireAdmin = access.requireOperator;
+  const requests = new Map();
+  app.use((req, res, next) => {
+    const key = req.socket.remoteAddress;
+    const now = Date.now();
+    const record = requests.get(key);
+    if (!record || record.until <= now) requests.set(key, { count: 1, until: now + 60000 });
+    else if (++record.count > 600) return res.status(429).json({ error: 'Too many requests' });
+    if (requests.size > 10000) for (const [id, entry] of requests) if (entry.until <= now) requests.delete(id);
+    next();
+  });
 
   // --------------------------------------------------- company-api client
   async function companyRequest(method, urlPath, body) {
@@ -176,7 +176,7 @@ async function main() {
   }
 
   // ------------------------------------------------------- core endpoint
-  app.post('/agent/execute', async (req, res) => {
+  app.post('/agent/execute', access.requireIdentity, async (req, res) => {
     const startNs = nowNs();
     const body = req.body && typeof req.body === 'object' ? req.body : {};
     const rawAction = body.action;
@@ -185,13 +185,21 @@ async function main() {
       return res.status(400).json({ status: 'INVALID', error: '"action" must be a snake_case string' });
     }
 
-    const agent = clip(body.agentId || body.agent || 'DemoAgent-01', 64);
+    const agent = req.identity.id;
     const payload = body.payload && typeof body.payload === 'object' && !Array.isArray(body.payload) ? body.payload : {};
 
     // Always inspect SQL AST for execute_sql, any sql_* action, or any payload containing sql
     const isSql = rawAction === 'execute_sql' || rawAction.startsWith('sql_') || typeof payload.sql === 'string';
     const action = isSql ? classifySqlAction(payload.sql) : rawAction;
     const target = isSql ? clip(payload.sql || body.target, 128) : clip(body.target, 128);
+
+    if (req.identity.role === 'agent') {
+      const actions = req.identity.actions || ['read_logs', 'spin_up_dev_vm', 'change_iam_permissions', 'execute_sql'];
+      const tables = req.identity.tables || ['customers', 'cloud_resources', 'iam_roles'];
+      const allowedAction = actions.includes(action) || (isSql && actions.includes('execute_sql'));
+      const allowedTables = !isSql || action === 'sql_destructive' || referencedTables(payload.sql).every((table) => tables.includes(table));
+      if (!allowedAction || !allowedTables) return res.status(403).json({ status: 'FORBIDDEN', error: 'Outside this agent identity scope' });
+    }
 
     // 1) INTERCEPT + 2) CLASSIFY + 3) CHECK POLICY
     const evalStart = nowNs();
@@ -301,13 +309,13 @@ async function main() {
   // ---------------------------------------------------- approval endpoints
   app.post('/approval/:id', requireAdmin, (req, res) => {
     const approved = req.body && req.body.approved === true;
-    if (!decideApproval(req.params.id, approved, 'rest')) {
+    if (!decideApproval(req.params.id, approved, req.identity.id)) {
       return res.status(404).json({ error: 'No pending request with that id (already decided or expired)' });
     }
     return res.json({ status: 'Decision recorded', id: req.params.id, approved });
   });
 
-  app.get('/approvals/pending', (req, res) => res.json(pendingList()));
+  app.get('/approvals/pending', requireAdmin, (req, res) => res.json(pendingList()));
 
   // ------------------------------------------------------------ read APIs
   app.get('/health', (req, res) =>
@@ -319,18 +327,18 @@ async function main() {
     })
   );
 
-  app.get('/policy', (req, res) => res.json({ ...engine.summary(), rules: engine.rulesList() }));
+  app.get('/policy', requireAdmin, (req, res) => res.json({ ...engine.summary(), rules: engine.rulesList() }));
 
-  app.get('/logs', async (req, res) => {
+  app.get('/logs', requireAdmin, async (req, res) => {
     const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 500);
     res.json(await audit.recent(limit));
   });
 
-  app.get('/metrics', (req, res) => {
+  app.get('/metrics', access.requireMetrics, (req, res) => {
     res.type('text/plain; version=0.0.4').send(metrics.render({ firewall_pending_approvals: pending.size }));
   });
 
-  app.get('/company-status.json', async (req, res) => {
+  app.get('/company-status.json', requireAdmin, async (req, res) => {
     const r = await companyRequest('GET', '/status');
     res.status(r.ok ? 200 : 502).json(r.ok ? r.data : { error: r.data.error || 'company api unreachable' });
   });
@@ -368,17 +376,18 @@ async function main() {
   });
 
   // ------------------------------------------------------ realtime (Android)
+  io.use((socket, next) => {
+    socket.identity = access.identify(socket.handshake.auth?.token);
+    if (socket.identity?.role !== 'operator') return next(new Error('Operator authentication required'));
+    next();
+  });
   io.on('connection', async (socket) => {
     socket.emit('history', await audit.recent(50));
     socket.emit('pending', pendingList());
 
     socket.on('approval_decision', (msg, ack) => {
       const reply = typeof ack === 'function' ? ack : () => {};
-      const token = (socket.handshake.auth && socket.handshake.auth.token) || '';
-      if (config.adminToken && !safeEqual(token, config.adminToken)) {
-        return reply({ ok: false, error: 'unauthorized' });
-      }
-      const ok = msg && typeof msg.id === 'string' && decideApproval(msg.id, msg.approved === true, 'socket');
+      const ok = msg && typeof msg.id === 'string' && decideApproval(msg.id, msg.approved === true, socket.identity.id);
       return reply({ ok: Boolean(ok) });
     });
   });

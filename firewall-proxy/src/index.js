@@ -18,13 +18,12 @@ const crypto = require('crypto');
 const express = require('express');
 const cors = require('cors');
 const { Server } = require('socket.io');
-const { Parser } = require('node-sql-parser');
 
 const { PolicyEngine } = require('./policyEngine');
 const { AuditStore } = require('./audit');
 const { Metrics } = require('./metrics');
 
-const sqlParser = new Parser();
+const { classifySqlAction } = require('./sqlPolicy');
 
 const config = {
   port: Number(process.env.PORT || 3000),
@@ -46,7 +45,6 @@ const EXECUTORS = {
   delete_prod_db: { method: 'DELETE', path: '/db/customers' },
   sql_read: { method: 'POST', path: '/sql/execute' },
   sql_write: { method: 'POST', path: '/sql/execute' },
-  sql_destructive: { method: 'POST', path: '/sql/execute' },
 };
 
 const ACTION_RE = /^[a-z][a-z0-9_]{0,63}$/;
@@ -58,71 +56,6 @@ function safeEqual(a, b) {
   const A = Buffer.from(String(a));
   const B = Buffer.from(String(b));
   return A.length === B.length && crypto.timingSafeEqual(A, B);
-}
-
-const DANGEROUS_PG_FUNCS = new Set([
-  'pg_read_file',
-  'pg_read_binary_file',
-  'pg_ls_dir',
-  'pg_stat_file',
-  'lo_import',
-  'lo_export',
-  'lo_get',
-  'lo_put',
-  'dblink',
-  'dblink_exec',
-  'pg_terminate_backend',
-  'pg_cancel_backend',
-  'pg_reload_conf',
-  'pg_rotate_logfile',
-]);
-
-function hasDangerousNode(node) {
-  if (!node || typeof node !== 'object') return false;
-  if (Array.isArray(node)) return node.some(hasDangerousNode);
-
-  if (node.type === 'function' && node.name) {
-    const fnName = typeof node.name === 'string'
-      ? node.name
-      : Array.isArray(node.name?.name)
-        ? node.name.name.map((p) => p.value).join('.')
-        : '';
-    if (DANGEROUS_PG_FUNCS.has(fnName.toLowerCase())) return true;
-  }
-
-  return Object.values(node).some(hasDangerousNode);
-}
-
-/**
- * Parses raw SQL via PostgreSQL AST to prevent regex/comment bypasses,
- * caller action spoofing (e.g., passing action: "sql_read" with UPDATE/DROP),
- * SELECT ... INTO table creation, dangerous server-side file functions,
- * and stacked-query injection.
- */
-function classifySqlAction(rawSql) {
-  if (!rawSql || typeof rawSql !== 'string') return 'sql_destructive';
-  try {
-    const normalizedSql = rawSql.trim().replace(/;+\s*$/, '').replace(/\s+RETURNING\s+[\s\S]+$/i, '');
-    const ast = sqlParser.astify(normalizedSql, { database: 'PostgresQL' });
-    const statements = Array.isArray(ast) ? ast : [ast];
-    if (statements.length !== 1) return 'sql_destructive';
-
-    const stmt = statements[0];
-    const stmtType = String(stmt.type || '').toLowerCase();
-
-    if (stmtType === 'select') {
-      if (stmt.into && stmt.into.position) return 'sql_destructive';
-      if (hasDangerousNode(stmt)) return 'sql_destructive';
-      return 'sql_read';
-    }
-    if (stmtType === 'insert' || stmtType === 'update') {
-      if (hasDangerousNode(stmt)) return 'sql_destructive';
-      return 'sql_write';
-    }
-    return 'sql_destructive';
-  } catch {
-    return 'sql_destructive';
-  }
 }
 
 async function main() {
@@ -449,7 +382,7 @@ async function main() {
   });
 
   // ---------------------------------------------------------------- start
-  server.listen(config.port, () => console.log(`[firewall] listening on :${config.port}`));
+  server.listen(config.port, () => console.log(`[firewall] listening on :${server.address().port}`));
 
   const shutdown = (signal) => {
     console.log(`[firewall] ${signal} received, shutting down`);

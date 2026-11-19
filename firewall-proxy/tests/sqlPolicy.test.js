@@ -28,6 +28,8 @@ for (const sql of [
   'DROP TABLE customers', 'TRUNCATE customers', 'DELETE FROM customers',
   'ALTER TABLE customers ADD COLUMN secret text',
   'SELECT 1; DROP TABLE customers', 'SELECT 1; SELECT 2',
+  'SELECT 1 -- RETURNING ignored\n; DROP TABLE customers',
+  "UPDATE customers SET plan = 'Pro' RETURNING pg_read_file('/etc/passwd')",
   'SELECT * INTO stolen FROM customers',
   'WITH x AS (DELETE FROM customers RETURNING *) SELECT * FROM x',
   'SELECT * FROM customers FOR UPDATE',

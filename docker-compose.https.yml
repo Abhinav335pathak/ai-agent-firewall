@@ -1,0 +1,27 @@
+# Set APP_DOMAIN, HTTP_BIND=127.0.0.1 and HTTP_PORT=8080 in .env first.
+# Public DNS must point to this host; ports 80 and 443 must be reachable.
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:?set a public APP_DOMAIN in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      nginx:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:2019/config/"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+    networks: [public_net]
+volumes:
+  caddy_data:
+  caddy_config:

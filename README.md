@@ -36,7 +36,8 @@ structured JSON; a real LLM agent would use the same endpoint (see [section 13](
 | **audit-db** | A *separate* PostgreSQL holding the append-only audit trail | container, private network only |
 | **nginx** | Single public endpoint (port 80) for REST + WebSocket | container, public network |
 | **agent-simulator** | Scripted "AI agent" firing the 4 scenarios | run on demand |
-| **Android app** | Live feed + approve/reject screen (built by your teammates) | phone |
+| **Web consoles** | Agent chat and live feed + authenticated approve/reject | browser |
+| **Android approval app** | Authenticated live feed, human approvals, recent audit timeline and history; source in `app/` | phone |
 
 ### Architecture and network isolation
 
@@ -59,7 +60,7 @@ structured JSON; a real LLM agent would use the same endpoint (see [section 13](
   The firewall is the only bridge. `make isolation` proves this live.
 * Only the firewall holds the credential (`INTERNAL_API_TOKEN`) the company API requires - the agent never
   sees a database password. This is the same pattern real companies use.
-* On AWS the security group opens only ports **22** (SSH, key-only) and **80**.
+* On AWS the security group allows **22** (SSH), **80** (HTTP) and **443** (HTTPS). Domain/TLS activation still requires DNS and applying the Terraform change.
 
 ---
 
@@ -70,12 +71,13 @@ ai-agent-firewall/
 ├── .github/workflows/ci-cd.yml   # the whole pipeline
 ├── policy/policies.yaml          # THE RULEBOOK (policy-as-code, hot-reloaded)
 ├── firewall-proxy/               # the brain
-│   ├── src/{index,policyEngine,audit,metrics}.js
+│   ├── src/{index,policyEngine,sqlPolicy,audit,metrics}.js
 │   ├── src/public/dashboard.html # live console (company DB + feed + approve buttons)
 │   ├── tests/policy.test.js      # security regression tests (run in CI)
 │   └── scripts/validate-policy.js
 ├── company-api-server/           # fake company backend + seed.sql
 ├── agent-simulator/simulate.js   # the scripted agent
+├── agent-simulator/gemini-sql-agent.js # interactive Gemini text-to-SQL agent
 ├── nginx/default.conf
 ├── monitoring/                   # optional Prometheus + Grafana
 ├── terraform/                    # AWS EC2 + security group + Elastic IP
@@ -132,13 +134,71 @@ make demo-auto     # hands-free: a robot reviewer approves the VM, rejects IAM, 
 make isolation     # proves the agent container cannot reach the company API or either database
 make smoke         # black-box checks (health, enforcement, data intact, ports closed)
 make reset         # restore the company DB + clear feed/audit (use before presenting)
-make test          # policy validation + 14 unit tests
+make test          # policy validation + firewall, SQL execution and Gemini-agent unit tests
 make logs          # follow logs      |  make down   # stop   |   make clean   # stop + delete data
 ```
 
 > **Generate lockfiles once** (recommended, makes builds reproducible). In each of `firewall-proxy/` and
 > `company-api-server/` run `npm install`, then commit the new `package-lock.json`. CI and Docker use
 > `npm ci` automatically when a lockfile exists.
+
+### Interactive Gemini text-to-SQL demo
+
+Start the local stack with `make up`, then open `http://localhost/company-status`.
+In another terminal, provide your own Gemini API key and start the agent:
+
+```bash
+export GEMINI_API_KEY='your-api-key'
+export AGENT_TOKEN='your-agent-token'  # local .env default: demo-agent-token
+node agent-simulator/gemini-sql-agent.js --url http://localhost
+```
+
+The CLI defaults to `gemini-3.5-flash-lite`; override with `GEMINI_MODEL`.
+`GEMINI_FALLBACK_MODELS` sets a comma-separated fallback list. `--url` overrides
+`FIREWALL_URL`, otherwise the CLI uses `http://localhost`. Temporary model failures
+have bounded retries; firewall execution is never automatically retried. Google
+credentials stay in the `x-goog-api-key` header and are never sent to the firewall.
+The browser console keeps credentials in page memory only.
+
+Try these prompts:
+
+* **"List the customer names and plans."** Gemini submits a SELECT; the firewall
+  parses its SQL structure (AST), classifies it as `sql_read`, and allows it.
+* **"Change Alice Sharma's plan to Pro."** An UPDATE becomes `sql_write` and waits
+  for an authenticated human decision. In the existing dashboard enter the local
+  admin token `demo-admin-token`, review the complete SQL, then approve or reject. Without a decision, the
+  write times out and does not execute.
+* **"Drop the customers table."** The firewall classifies it as `sql_destructive`
+  and blocks it before it reaches PostgreSQL.
+
+This is deliberately a limited demo SQL interface. Only one SELECT, INSERT or
+UPDATE is supported, against `customers`, `cloud_resources` or `iam_roles` in
+the public schema. Safe functions are limited to COUNT, SUM, AVG, MIN, MAX,
+LOWER, UPPER, LENGTH, COALESCE, NULLIF, ROUND and ABS. CTEs, SELECT INTO,
+destructive statements, arbitrary functions and multiple statements fail closed.
+The agent cannot bypass classification by sending its own `sql_read` label.
+
+The private backend executes reads in a read-only transaction and writes only
+after firewall approval. Extended query protocol rejects multiple commands;
+statement/lock timeouts bound database work. Responses include at most 100 rows.
+SQL and the decision are recorded in the existing audit feed. Gemini's final
+explanation uses the actual firewall response, with tools disabled during that
+explanation so it cannot issue another write.
+
+`make test` uses mocked Gemini responses and needs no API key. CI additionally
+runs the real-PostgreSQL SQL smoke test. To run that test yourself, use **only a
+disposable test database**: it inserts one customer and exercises approval,
+rejection, timeout, blocking and audit checks.
+
+```bash
+ADMIN_TOKEN=demo-admin-token AGENT_TOKEN=demo-agent-token ALLOW_SQL_TEST_WRITES=true \
+  node scripts/sql-smoke-test.js http://localhost
+```
+
+The existing four scripted scenarios still run with `make demo-auto`.
+The CLI uses Google's [generateContent REST API](https://ai.google.dev/api/generate-content).
+An actual Gemini account call requires your API key and available model quota;
+mock tests do not establish live Gemini acceptance.
 
 ---
 
@@ -287,23 +347,29 @@ ssh -i ~/.ssh/firewall-ec2-key ubuntu@$HOST 'grep ADMIN_TOKEN ~/app/.env'
 
 ---
 
-## 10. Part G - Connect the Android app (contract for your teammates)
+## 10. Part G - Android approval and monitoring app
 
-Base URL: `http://<public_ip>` (one endpoint for REST **and** WebSocket).
+The operator app is in [`app/`](app/README.md). Run it with Flutter 3.38.9:
 
-> **Android blocks plain HTTP by default** (API 28+). For the demo add
-> `android:usesCleartextTraffic="true"` to the `<application>` tag in `AndroidManifest.xml`, or put a
-> domain + HTTPS in front (see Hardening).
+```bash
+cd app
+flutter pub get --enforce-lockfile
+flutter run -d <android-device-id>
+```
 
-**Socket.IO events the app receives** (server → app):
+Connect with a server origin and an operator/reviewer token. The app verifies protected endpoints, then opens the live feed. Screens cover overview, approvals, complete action/SQL details, recent history and settings. Credentials and private history stay in memory; logout clears the session.
+
+Debug builds permit HTTP for disposable local demos; release/profile builds require HTTPS. See the [app guide](app/README.md) for emulator/USB routing, the isolated QA server, tests and APK artifacts. Public HTTPS still requires your domain/DNS configuration.
+
+**Socket.IO requires `auth: { token: reviewerToken }` before it sends any history. Events the client receives** (server → app):
 
 | Event | Payload | Use |
 |---|---|---|
 | `history` | array of recent entries (newest first) | fill the feed on connect |
 | `pending` | array of waiting approvals | restore approval cards on reconnect |
 | `approval_required` | entry with `decision: "PENDING_APPROVAL"`, `expiresAt`, `timeoutMs` | **show the Approve / Reject card** |
-| `action_event` | final entry (`ALLOWED`, `BLOCKED`, `APPROVED_BY_HUMAN`, `REJECTED_BY_HUMAN`, `TIMED_OUT`, `ERROR`) | add to feed; **remove the pending card with the same `id`** |
-| `feed_reset` | - | clear the feed |
+| `action_event` | audit stage, including `INTERCEPTED`, `EXECUTING` and terminal outcomes | update feed; remove pending card only for a terminal outcome |
+| `feed_reset` | - | re-fetch authoritative history and pending approvals |
 | `policy_reloaded` | `{version, ruleCount, ...}` | optional toast |
 
 Entry shape:
@@ -327,25 +393,11 @@ Content-Type: application/json
 (`404` = already decided or expired. Alternatively emit `approval_decision` `{id, approved}` over the socket,
 connecting with `auth: { token: ADMIN_TOKEN }`.)
 
-Other endpoints: `GET /logs?limit=50` (audit trail), `GET /policy`, `GET /health`, `GET /metrics`.
+Reader endpoints require an operator Bearer token. `GET /health` alone is public; metrics also accepts its dedicated read-only `METRICS_TOKEN`.
 
-Kotlin sketch (`io.socket:socket.io-client:2.1.0`, OkHttp):
+The app's [`gateway.dart`](app/lib/gateway.dart) implements authenticated REST and Socket.IO. [`session.dart`](app/lib/session.dart) merges events by request ID and reconciles reconnects. Review controls are disabled offline, during refresh, on expiry or while a decision is in flight. A successful review response does not imply successful execution: the final audit event supplies that result.
 
-```kotlin
-val socket = IO.socket("http://<public_ip>")
-socket.on("approval_required") { args -> val e = args[0] as JSONObject; /* show card for e.getString("id") */ }
-socket.on("action_event")      { args -> val e = args[0] as JSONObject; /* add to feed, remove pending card */ }
-socket.connect()
-
-fun decide(id: String, approved: Boolean) {
-    val body = """{"approved":$approved}""".toRequestBody("application/json".toMediaType())
-    val req = Request.Builder().url("http://<public_ip>/approval/$id")
-        .header("Authorization", "Bearer $ADMIN_TOKEN").post(body).build()
-    OkHttpClient().newCall(req).enqueue(/* ... */)
-}
-```
-
-No phone ready? The web dashboard at `/company-status` does exactly the same and works as a backup on stage.
+Recent counts and timelines are bounded by the latest 500 audit events; they do not replace the complete server audit archive. Reliable background push notifications are a separate future feature. The existing web dashboard at `/company-status` remains available for the projector.
 
 ---
 
@@ -434,24 +486,77 @@ as the tool result. To add a new capability: add the action to `policy/policies.
 
 ---
 
-## 15. Security notes - demo vs. production
+## 15. Security and operational boundaries
 
-What is already production-grade: network isolation, credentials held only by the firewall, fail-closed
-defaults, tokens compared in constant time, non-root containers, IMDSv2, encrypted disk, key-only SSH,
-image scanning, auto-rollback, append-only audit table (trigger-enforced).
+The SQL classifier parses the complete original statement, including RETURNING;
+all callers are reclassified. The active HTTP gateway and real API are tested,
+not just unused helper modules. SQL supports a restricted, single-statement demo
+subset against the three public demo tables. The private API executes under the
+non-login `firewall_sql_executor` role with SELECT/INSERT/UPDATE permissions only,
+read-only transactions for reads, extended query protocol, timeouts and rollback.
 
-Deliberately simplified for a demo (fix before using for real):
+Credentials and scopes:
 
-1. **HTTP only.** Add a domain + TLS (Caddy or nginx + Let's Encrypt) and use `https`/`wss`.
-2. **`POST /agent/execute` is unauthenticated.** Give each agent an API key / mTLS identity.
-3. **One shared admin token** guards approvals. Use per-user identity (SSO) so the audit log records *who* approved.
-4. **`/company-status.json` is public** (dummy data). Remove or protect it for real systems.
-5. **Audit trail can be wiped** by `/admin/reset` (`ALLOW_AUDIT_RESET=true`). Set `false`, and ship audit rows to
-   WORM storage / a SIEM; the DB owner could still drop the trigger.
-6. **SSH is open to the internet** because GitHub-hosted runners have changing IPs. Use SSM Session Manager or a
-   self-hosted runner and restrict `ssh_allowed_cidr`.
-7. **Terraform state is local.** Use an S3 backend with locking for a team.
-8. **Rate limiting** on the agent endpoint is not implemented.
+* `AGENT_TOKEN` identifies the default `demo-agent`. `agentId` in a request cannot
+  impersonate another identity. Use `AGENT_CREDENTIALS` JSON for named agents with
+  `actions` and `tables` scopes; table lists contain unqualified demo table names.
+* `ADMIN_TOKEN` identifies the compatibility operator `admin`. `REVIEWER_TOKENS`
+  JSON maps individual reviewer names to unique tokens; audit outcomes record
+  the reviewer identity. SSO/token rotation remains an organization-level extension.
+* `/logs`, `/policy`, `/approvals/pending`, `/company-status.json`, reset and
+  Socket.IO history are operator-only. `/metrics` accepts operators or the
+  monitoring-only credential. Agent credentials cannot read those private APIs.
+* All POST `/agent/execute` calls require `Authorization: Bearer <token>` and an
+  `Idempotency-Key` of 8-128 letters, digits, `_`, `.`, `:`, or `-`. Reuse the same
+  key only for a retry of the identical request. A different body gets 409;
+  pending/interrupted requests are never automatically executed twice.
+
+Audit intent is durable before execution. Audit/ledger outages fail closed.
+Successful responses and idempotency keys survive restarts; pending approvals
+are cancelled after restart. If a crash happened while execution was in progress,
+its outcome is marked `EXECUTION_UNCONFIRMED`: inspect data and audit before any
+manual retry. This is a **single-firewall-instance** design, not an exactly-once
+transaction across two independent databases or a multi-replica queue.
+Production deployments disable audit wiping. `/admin/reset` still changes the toy
+company data, so only trusted operators should use it. Audit DB ownership is not
+WORM protection against the database administrator; external immutable storage,
+backups and retention policy remain production operational requirements.
+
+### Public HTTPS
+
+HTTP without TLS is for local/disposable demos only. Use a public domain with DNS
+pointing to the EC2 IP, apply Terraform to open 443, and set on the server:
+
+```dotenv
+APP_DOMAIN=firewall.example.com
+HTTP_BIND=127.0.0.1
+HTTP_PORT=8080
+COMPOSE_FILE=docker-compose.yml:docker-compose.https.yml
+```
+
+Then run `docker compose up -d --wait`; the HTTPS overlay runs Caddy on public
+80/443 while Nginx's HTTP listener binds only to loopback. Certificates and renewal
+state persist in Caddy volumes. A configured APP_DOMAIN is respected by future
+deploys. Public DNS and a real certificate cannot be verified without the domain.
+See [Caddy automatic HTTPS](https://caddyserver.com/docs/automatic-https).
+Never use certificate-warning bypasses for operator credentials.
+
+### Verification commands
+
+`make check` checks all JavaScript/inline-script and shell syntax. `make test`
+validates policies and runs unit, real HTTP gateway, DOM and socket-auth tests.
+CI additionally runs the original scenarios, SQL security checks, actual
+PostgreSQL role/transaction checks, crash recovery and audit-outage recovery.
+The lifecycle test deliberately requires a disposable project name:
+
+```bash
+ADMIN_TOKEN=demo-admin-token AGENT_TOKEN=demo-agent-token ALLOW_SQL_TEST_WRITES=true \
+  node scripts/security-smoke-test.js http://localhost ai-agent-firewall-security-ci
+```
+
+Do not run lifecycle/SQL-write tests against the live presentation database.
+Use `make smoke` for the normal authenticated, non-destructive check. Deployment
+runs that check over SSH using credentials that stay on the server.
 
 ### How this maps to the real world
 

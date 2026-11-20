@@ -8,6 +8,9 @@ services:
   prometheus:
     image: prom/prometheus:v2.55.1
     restart: unless-stopped
+    environment:
+      METRICS_TOKEN: ${METRICS_TOKEN:?set METRICS_TOKEN in .env}
+    entrypoint: ["/bin/sh", "-ec", "umask 077; printf '%s' \"$$METRICS_TOKEN\" > /tmp/firewall-metrics-token; exec /bin/prometheus \"$$@\"", "--"]
     volumes:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus

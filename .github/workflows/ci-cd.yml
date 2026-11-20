@@ -47,10 +47,13 @@ jobs:
         run: npm test
 
       - name: Syntax-check the other services
-        run: |
-          node --check company-api-server/index.js
-          node --check agent-simulator/simulate.js
-          node --check firewall-proxy/src/index.js
+        run: make check
+
+      - name: Test SQL transaction handling
+        run: node --test company-api-server/tests/*.test.js
+
+      - name: Test Gemini agent with mocked API responses
+        run: node --test agent-simulator/tests/*.test.js
 
   terraform:
     name: Terraform validate
@@ -71,6 +74,8 @@ jobs:
     name: Integration test (real containers)
     needs: test
     runs-on: ubuntu-latest
+    env:
+      COMPOSE_PROJECT_NAME: ai-agent-firewall-security-ci
     steps:
       - uses: actions/checkout@v4
 
@@ -86,13 +91,28 @@ jobs:
       - name: Run the 4 agent scenarios (robot reviewer approves VM, rejects IAM)
         env:
           ADMIN_TOKEN: demo-admin-token
+          AGENT_TOKEN: demo-agent-token
         run: node agent-simulator/simulate.js --url http://localhost --auto-approve --assert --delay 500
 
       - name: Smoke test + verify the database state after the demo
         run: ./scripts/smoke-test.sh http://localhost --after-demo
 
+      - name: Verify SQL enforcement against the disposable CI database
+        env:
+          ADMIN_TOKEN: demo-admin-token
+          AGENT_TOKEN: demo-agent-token
+          ALLOW_SQL_TEST_WRITES: "true"
+        run: node scripts/sql-smoke-test.js http://localhost
+
       - name: Prove the agent is network-isolated from the data tier
         run: ./scripts/prove-isolation.sh
+
+      - name: Verify authenticated execution, crash recovery and audit outages
+        env:
+          ADMIN_TOKEN: demo-admin-token
+          AGENT_TOKEN: demo-agent-token
+          ALLOW_SQL_TEST_WRITES: "true"
+        run: node scripts/security-smoke-test.js http://localhost ai-agent-firewall-security-ci
 
       - name: Dump logs on failure
         if: failure()
@@ -191,7 +211,7 @@ jobs:
         run: |
           SSH="ssh -i $HOME/.ssh/deploy_key ubuntu@$EC2_HOST"
           $SSH 'cloud-init status --wait >/dev/null 2>&1 || true; mkdir -p ~/app'
-          tar czf - docker-compose.yml docker-compose.monitoring.yml .env.example nginx policy monitoring scripts \
+          tar czf - docker-compose.yml docker-compose.monitoring.yml docker-compose.https.yml .env.example nginx caddy policy monitoring scripts \
             | $SSH 'tar xzf - -C ~/app'
 
       - name: Pull images and restart the stack (auto-rollback on failure)
@@ -200,4 +220,7 @@ jobs:
             "cd ~/app && DOCKERHUB_USERNAME='$DOCKERHUB_USERNAME' IMAGE_TAG='$IMAGE_TAG' bash scripts/deploy-remote.sh"
 
       - name: Smoke test the live server
-        run: ./scripts/smoke-test.sh "http://$EC2_HOST"
+        run: |
+          # Application secrets stay on the server rather than crossing CI logs.
+          ssh -i "$HOME/.ssh/deploy_key" "ubuntu@$EC2_HOST" \
+            'cd ~/app && bash scripts/smoke-test.sh'

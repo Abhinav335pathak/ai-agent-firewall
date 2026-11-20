@@ -6,21 +6,20 @@
 #   ./scripts/prove-isolation.sh
 set -uo pipefail
 
-try() { # try <label> <url> <expect: reachable|unreachable>
-  if docker compose run --rm --no-deps -T --entrypoint wget agent-simulator -T 3 -qO- "$2" >/dev/null 2>&1; then
-    result="reachable"
-  else
-    result="unreachable"
-  fi
-  if [ "$result" = "$3" ]; then echo "OK    $1 -> $result (expected)"; else echo "BAD   $1 -> $result (expected $3)"; BAD=1; fi
-}
-
-BAD=0
-echo "From inside the AI agent's container:"
-try "firewall-proxy      " http://firewall-proxy:3000/health reachable
-try "company-api-server  " http://company-api-server:4000/health unreachable
-try "company-postgres-db " http://company-postgres-db:5432 unreachable
-try "audit-db            " http://audit-db:5432 unreachable
-
-echo
-if [ "$BAD" = 0 ]; then echo "The agent can only reach the firewall. Isolation holds."; else echo "ISOLATION BROKEN" >&2; exit 1; fi
+docker compose run --rm --no-deps -T --entrypoint node agent-simulator -e '
+const net = require("node:net");
+(async () => {
+  let failures = 0;
+  for (const [host, port, expected] of [["firewall-proxy", 3000, true], ["company-api-server", 4000, false], ["company-postgres-db", 5432, false], ["audit-db", 5432, false]]) {
+    const reachable = await new Promise((resolve) => {
+      const socket = net.createConnection({ host, port });
+      socket.setTimeout(3000);
+      socket.once("connect", () => { socket.destroy(); resolve(true); });
+      socket.once("error", () => resolve(false));
+      socket.once("timeout", () => { socket.destroy(); resolve(false); });
+    });
+    console.log(`${reachable === expected ? "PASS" : "FAIL"} ${host}:${port} ${reachable ? "reachable" : "unreachable"}`);
+    if (reachable !== expected) failures++;
+  }
+  process.exitCode = failures ? 1 : 0;
+})();'

@@ -12,9 +12,11 @@ const path = require('path');
 const crypto = require('crypto');
 const express = require('express');
 const { Pool } = require('pg');
+const { executeSql, prepareSqlRole } = require('./sqlExecutor');
 
 const PORT = Number(process.env.PORT || 4000);
 const INTERNAL_TOKEN = process.env.INTERNAL_API_TOKEN || '';
+if (!INTERNAL_TOKEN || !process.env.DATABASE_URL) throw new Error('Internal credential and database URL are required');
 const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 5 });
 const SEED_SQL = fs.readFileSync(path.join(__dirname, 'seed.sql'), 'utf8');
 
@@ -36,6 +38,7 @@ async function ensureSeeded(retries = 20) {
         await pool.query(SEED_SQL);
         console.log('[company-api] fresh database seeded');
       }
+      await prepareSqlRole(pool);
       return;
     } catch (err) {
       console.warn(`[company-api] database not ready (${i}/${retries}): ${err.message}`);
@@ -71,7 +74,6 @@ app.get(
 
 // Everything below requires the firewall's internal credential.
 app.use((req, res, next) => {
-  if (!INTERNAL_TOKEN) return next();
   if (safeEqual(req.get('x-internal-token') || '', INTERNAL_TOKEN)) return next();
   return res.status(401).json({ error: 'internal credential required' });
 });
@@ -125,15 +127,7 @@ app.delete(
 app.post(
   '/sql/execute',
   wrap(async (req, res) => {
-    const sql = String(req.body?.payload?.sql || req.body?.sql || '').trim();
-    if (!sql) return res.status(400).json({ error: 'sql query is required' });
-
-    const result = await pool.query(sql);
-    res.json({
-      command: result.command,
-      rowCount: result.rowCount,
-      rows: result.rows || [],
-    });
+    res.json(await executeSql(pool, req.body?.payload?.sql, req.body?.sqlAction));
   })
 );
 
@@ -141,6 +135,7 @@ app.post(
   '/admin/reset',
   wrap(async (req, res) => {
     await pool.query(SEED_SQL);
+    await prepareSqlRole(pool);
     res.json({ reset: true, snapshot: await snapshot() });
   })
 );
@@ -149,7 +144,7 @@ app.use((req, res) => res.status(404).json({ error: 'not found' }));
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {
   console.error('[company-api] error:', err.message);
-  res.status(500).json({ error: err.message });
+  res.status(err.status || 500).json({ error: err.message });
 });
 
 ensureSeeded()

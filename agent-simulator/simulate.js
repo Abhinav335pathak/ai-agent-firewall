@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 'use strict';
+const { randomUUID } = require('node:crypto');
 
 /**
  * Scripted "AI agent". Fires 4 realistic actions at the firewall, one after another.
@@ -29,7 +30,7 @@ const DELAY_MS = Number(opts.delay ?? process.env.STEP_DELAY_MS ?? 3000);
 const TOKEN = process.env.ADMIN_TOKEN || '';
 const AUTO = opts['auto-approve'];
 const ASSERT = opts.assert;
-const AGENT = 'DemoAgent-01';
+const AGENT = process.env.AGENT_ID || 'demo-agent';
 
 if (ASSERT && !AUTO) {
   console.error('--assert only makes sense with --auto-approve (a human would decide otherwise)');
@@ -42,10 +43,10 @@ if (AUTO && !TOKEN) {
 
 // ciApprove: what the robot reviewer does in --auto-approve mode (null = nothing to decide)
 const SCENARIOS = [
-  { id: 1, name: 'Read server logs', action: 'read_logs', target: 'prod-web-server-01', expect: 200, ciApprove: null },
-  { id: 2, name: 'Spin up a dev server', action: 'spin_up_dev_vm', target: 'dev', expect: 200, ciApprove: true },
-  { id: 3, name: 'Change admin permissions', action: 'change_iam_permissions', target: 'ai-agent', expect: 403, ciApprove: false },
-  { id: 4, name: 'Delete the production database', action: 'delete_prod_db', target: 'company_prod.customers', expect: 403, ciApprove: null },
+  { id: 1, name: 'Read server logs', action: 'read_logs', target: 'prod-web-server-01', expect: 200, expectLabel: 'ALLOWED', ciApprove: null },
+  { id: 2, name: 'Spin up a dev server', action: 'spin_up_dev_vm', target: 'dev', expect: 200, expectLabel: 'APPROVED', ciApprove: true },
+  { id: 3, name: 'Change admin permissions', action: 'change_iam_permissions', target: 'ai-agent', expect: 403, expectLabel: 'REJECTED', ciApprove: false },
+  { id: 4, name: 'Delete the production database', action: 'delete_prod_db', target: 'company_prod.customers', expect: 403, expectLabel: 'BLOCKED', ciApprove: null },
 ];
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -54,12 +55,12 @@ const ICON = { ALLOWED: '✅', APPROVED: '✅', BLOCKED: '⛔', REJECTED: '🚫'
 /** Plays the human reviewer for CI: waits for the pending request, then approves/rejects it. */
 async function robotReviewer(action, approved, state) {
   while (!state.done) {
-    const list = await fetch(`${BASE}/approvals/pending`).then((r) => r.json()).catch(() => []);
+    const list = await fetch(`${BASE}/approvals/pending`, { headers: { authorization: `Bearer ${TOKEN}` } }).then((r) => r.json()).catch(() => []);
     const hit = list.find((e) => e.action === action && e.agent === AGENT);
     if (hit) {
       const r = await fetch(`${BASE}/approval/${hit.id}`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` },
+        headers: { 'content-type': 'application/json', 'idempotency-key': randomUUID(), authorization: `Bearer ${TOKEN}` },
         body: JSON.stringify({ approved }),
       });
       if (r.status === 401) {
@@ -87,7 +88,7 @@ async function run(s) {
   try {
     res = await fetch(`${BASE}/agent/execute`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', 'idempotency-key': randomUUID(), authorization: `Bearer ${process.env.AGENT_TOKEN || ''}` },
       body: JSON.stringify({ agentId: AGENT, action: s.action, target: s.target, payload: {} }),
       signal: AbortSignal.timeout(60000),
     });
@@ -102,7 +103,7 @@ async function run(s) {
 
   const label = data.status || 'UNKNOWN';
   console.log(`    ${ICON[label] || '❔'} firewall says: ${label} (HTTP ${res.status})${data.reason ? ' - ' + data.reason : ''}`);
-  return { s, ok: res.status === s.expect, status: res.status };
+  return { s, ok: res.status === s.expect && label === s.expectLabel, status: res.status };
 }
 
 (async () => {

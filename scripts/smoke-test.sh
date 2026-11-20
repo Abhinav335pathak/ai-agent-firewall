@@ -8,18 +8,25 @@
 # delete_prod_db (which must be blocked), so they are safe to run on the production demo box.
 set -uo pipefail
 
-BASE="${1:-http://localhost}"
+DEFAULT_PORT="$(sed -n 's/^HTTP_PORT=//p' .env 2>/dev/null || true)"
+BASE="${1:-http://127.0.0.1:${DEFAULT_PORT:-80}}"
 BASE="${BASE%/}"
 MODE="${2:-}"
 HOST="$(echo "$BASE" | sed -E 's#^https?://##; s#[:/].*$##')"
 FAILS=0
+if [ -f .env ]; then
+  ADMIN_TOKEN="${ADMIN_TOKEN:-$(sed -n 's/^ADMIN_TOKEN=//p' .env)}"
+  AGENT_TOKEN="${AGENT_TOKEN:-$(sed -n 's/^AGENT_TOKEN=//p' .env)}"
+fi
+ADMIN_TOKEN="${ADMIN_TOKEN:-}"
+AGENT_TOKEN="${AGENT_TOKEN:-}"
 
 pass() { echo "PASS  $*"; }
 fail() { echo "FAIL  $*" >&2; FAILS=$((FAILS + 1)); }
 
 post_status() { # post_status <action>  -> prints HTTP status
   curl -s -o /dev/null -w '%{http_code}' --max-time 20 -X POST "$BASE/agent/execute" \
-    -H 'Content-Type: application/json' -d "{\"agentId\":\"smoke-test\",\"action\":\"$1\"}"
+    -H "Idempotency-Key: smoke-$$-$RANDOM-$1" -H "Authorization: Bearer $AGENT_TOKEN" -H 'Content-Type: application/json' -d "{\"agentId\":\"smoke-test\",\"action\":\"$1\"}"
 }
 
 echo "Smoke test against $BASE"
@@ -37,12 +44,17 @@ if [ "$ready" = 1 ]; then pass "firewall /health is up"; else fail "firewall /he
 [ "$(post_status delete_prod_db)" = "403" ] && pass "delete_prod_db is BLOCKED (403)" || fail "delete_prod_db must return 403"
 
 # 3. the real database is intact
-status_json="$(curl -fsS --max-time 10 "$BASE/company-status.json" || true)"
+status_json="$(curl -fsS --max-time 10  -H "Authorization: Bearer $ADMIN_TOKEN" "$BASE/company-status.json" || true)"
 if echo "$status_json" | grep -q 'Alice Sharma'; then pass "production customers are intact"; else fail "customers table missing or empty"; fi
 
 # 4. the data tier is not exposed to the outside world
 for port in 3000 4000 5432; do
-  if timeout 3 bash -c "exec 3<>/dev/tcp/$HOST/$port" 2>/dev/null; then
+  if ! command -v timeout >/dev/null && ! command -v node >/dev/null; then
+    fail "cannot verify port $port: install timeout or Node.js"
+    continue
+  fi
+  if { command -v timeout >/dev/null && timeout 3 bash -c "exec 3<>/dev/tcp/$HOST/$port" 2>/dev/null; } ||
+     { ! command -v timeout >/dev/null && node -e 'const s=require("net").connect({host:process.argv[1],port:Number(process.argv[2])});s.setTimeout(3000);s.on("connect",()=>{s.destroy();process.exit(0)});s.on("error",()=>process.exit(1));s.on("timeout",()=>{s.destroy();process.exit(1)});' "$HOST" "$port"; }; then
     fail "port $port is reachable from outside - it must be closed"
   else
     pass "port $port is not exposed"

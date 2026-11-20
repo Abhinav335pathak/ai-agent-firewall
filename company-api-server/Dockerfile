@@ -11,7 +11,7 @@ ENV NODE_ENV=production
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY package*.json ./
-COPY index.js seed.sql ./
+COPY index.js sqlExecutor.js seed.sql ./
 USER node
 EXPOSE 4000
 HEALTHCHECK --interval=10s --timeout=3s --start-period=15s --retries=3 \

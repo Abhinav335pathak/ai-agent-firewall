@@ -14,7 +14,7 @@ services:
     <<: *defaults
     image: nginx:stable-alpine
     ports:
-      - "${HTTP_PORT:-80}:80"
+      - "${HTTP_BIND:-0.0.0.0}:${HTTP_PORT:-80}:80"
     volumes:
       - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
@@ -35,13 +35,18 @@ services:
     image: ${DOCKERHUB_USERNAME:-local}/firewall-proxy:${IMAGE_TAG:-latest}
     environment:
       PORT: "3000"
+      RELEASE_SHA: ${IMAGE_TAG:-local}
       COMPANY_API_URL: http://company-api-server:4000
       INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?set INTERNAL_API_TOKEN in .env}
       AUDIT_DATABASE_URL: postgres://audit:${AUDIT_DB_PASSWORD:?set AUDIT_DB_PASSWORD in .env}@audit-db:5432/audit
       ADMIN_TOKEN: ${ADMIN_TOKEN:?set ADMIN_TOKEN in .env}
+      AGENT_TOKEN: ${AGENT_TOKEN:?set AGENT_TOKEN in .env}
+      METRICS_TOKEN: ${METRICS_TOKEN:?set METRICS_TOKEN in .env}
+      REVIEWER_TOKENS: ${REVIEWER_TOKENS:-}
+      AGENT_CREDENTIALS: ${AGENT_CREDENTIALS:-}
       POLICY_FILE: /app/policy/policies.yaml
       APPROVAL_TIMEOUT_MS: ${APPROVAL_TIMEOUT_MS:-30000}
-      ALLOW_AUDIT_RESET: ${ALLOW_AUDIT_RESET:-true}
+      ALLOW_AUDIT_RESET: ${ALLOW_AUDIT_RESET:-false}
     volumes:
       # Mount the DIRECTORY (not the single file) so hot-reload keeps working
       # when the file is replaced by a deploy.
@@ -110,6 +115,7 @@ services:
     environment:
       FIREWALL_URL: http://firewall-proxy:3000
       ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+      AGENT_TOKEN: ${AGENT_TOKEN:?set AGENT_TOKEN in .env}
     networks: [public_net] # NOT on the company network: it has no route to the data
 
 networks:

@@ -13,6 +13,8 @@ A real Android reviewer client for the same gateway used by the web consoles and
 
 The app does not generate or execute SQL itself. The backend remains responsible for classification, policy, expiry, execution and durable audit. An accepted approval is displayed separately from the final execution outcome.
 
+The app uses the web console's dark colors and a consistent set of action and status icons. Statuses also have text labels, so their meaning does not depend on color alone.
+
 ## Run on Android
 
 Use Flutter **3.38.9 / Dart 3.10.8**, JDK 17 and the Android SDK. Run `flutter doctor` to check your machine.
@@ -53,6 +55,14 @@ AGENT_TOKEN=qa-agent node agent-simulator/simulate.js --url http://127.0.0.1:330
 ```
 
 The default local QA approval window is 12 seconds. For a slower interactive demo start the QA server with `MOBILE_QA_APPROVAL_TIMEOUT_MS=60000`. Approve the VM request and reject the IAM change on the phone; the destructive action is blocked by policy without an approval button.
+
+### Quick emulator check
+
+1. Start the QA server with `MOBILE_QA_APPROVAL_TIMEOUT_MS=60000 node app/tool/qa-server.js` from the repository root.
+2. Install the debug APK with `adb -s <emulator-id> install -r app/build/app/outputs/flutter-apk/app-debug.apk` and open **Agent Firewall**.
+3. Connect to `http://10.0.2.2:3300` with reviewer token `qa-reviewer`.
+4. In another terminal, run `AGENT_TOKEN=qa-agent node agent-simulator/simulate.js --url http://127.0.0.1:3300 --delay 1500`. The app should show `read_logs` as allowed, a dev VM request awaiting approval, an IAM request awaiting rejection, and `delete_prod_db` as blocked. Approve the VM and reject the IAM request before each 60-second timeout.
+5. Open **History**. Each action should have one request row with its final outcome; open a row to inspect the available audit stages. Stop the QA server with Ctrl+C when finished.
 
 For the full containerized environment, use your gateway origin and an operator token from its configuration. The public deployment currently has no domain/certificate configured: use a debug build and disposable credentials on a trusted test network until HTTPS is active.
 

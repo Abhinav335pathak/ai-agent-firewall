@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import '../session.dart';
 import 'components.dart';
+import 'theme.dart';
 
 class ActionDetails extends StatelessWidget {
   const ActionDetails({super.key, required this.session, required this.id});
@@ -85,7 +86,7 @@ class ActionDetails extends StatelessWidget {
           style: const TextStyle(
             fontFamily: 'monospace',
             fontSize: 11,
-            color: Color(0xFF61777F),
+            color: FirewallColors.muted,
           ),
         ),
         const SectionTitle('Full request'),
@@ -133,7 +134,7 @@ class ActionDetails extends StatelessWidget {
             timeLeft(pending, DateTime.now()),
             style: const TextStyle(
               fontWeight: FontWeight.w700,
-              color: Color(0xFF965400),
+              color: FirewallColors.amber,
             ),
           ),
           const SizedBox(height: 8),
@@ -142,7 +143,7 @@ class ActionDetails extends StatelessWidget {
             style: TextStyle(
               fontSize: 12,
               height: 1.5,
-              color: Color(0xFF61777F),
+              color: FirewallColors.muted,
             ),
           ),
           const SizedBox(height: 16),
@@ -177,7 +178,11 @@ class ActionDetails extends StatelessWidget {
         const SectionTitle('Recent audit timeline'),
         const Text(
           'Available stages in the recent feed. A recorded approval is separate from a successful execution.',
-          style: TextStyle(fontSize: 12, height: 1.5, color: Color(0xFF61777F)),
+          style: TextStyle(
+            fontSize: 12,
+            height: 1.5,
+            color: FirewallColors.muted,
+          ),
         ),
         const SizedBox(height: 12),
         if (stages.isEmpty)
@@ -239,7 +244,7 @@ class ActionDetails extends StatelessWidget {
       children: [
         Text(
           label,
-          style: const TextStyle(color: Color(0xFF61777F), fontSize: 11),
+          style: const TextStyle(color: FirewallColors.muted, fontSize: 11),
         ),
         const SizedBox(height: 4),
         SelectableText(value, style: const TextStyle(fontSize: 13)),

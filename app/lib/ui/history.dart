@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../session.dart';
 import 'components.dart';
+import 'theme.dart';
 
 class HistoryScreen extends StatefulWidget {
   const HistoryScreen({super.key, required this.session, required this.onOpen});
@@ -55,7 +56,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
           const Text(
             'One row per request. Open it for the available audit stages. Filters apply to the latest 500 events, not the full server archive.',
             style: TextStyle(
-              color: Color(0xFF61777F),
+              color: FirewallColors.muted,
               fontSize: 12,
               height: 1.5,
             ),

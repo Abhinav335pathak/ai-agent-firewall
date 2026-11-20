@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import '../session.dart';
+import 'theme.dart';
 
 class ConnectionScreen extends StatefulWidget {
   const ConnectionScreen({super.key, required this.session});
@@ -42,7 +43,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                 const Icon(
                   Icons.shield_outlined,
                   size: 48,
-                  color: Color(0xFF087F75),
+                  color: FirewallColors.blue,
                 ),
                 const SizedBox(height: 18),
                 const Text(
@@ -55,17 +56,17 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                 ),
                 const SizedBox(height: 16),
                 const Text(
-                  'Every action.\nUnder control.',
+                  'Review actions\nbefore they run.',
                   style: TextStyle(
                     fontSize: 38,
                     fontWeight: FontWeight.w800,
                     height: 1.12,
-                    color: Color(0xFF142D34),
+                    color: FirewallColors.text,
                   ),
                 ),
                 const SizedBox(height: 14),
                 const Text(
-                  'Your mobile review desk. Watch agent activity, inspect risk and decide what goes through.',
+                  'Connect to review agent requests and inspect every policy decision.',
                   style: TextStyle(fontSize: 16, height: 1.5),
                 ),
                 const SizedBox(height: 28),
@@ -118,7 +119,10 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                     padding: EdgeInsets.only(top: 12),
                     child: Text(
                       'DEBUG BUILD · HTTP is available for local demos. Use trusted networks and demo credentials only.',
-                      style: TextStyle(color: Color(0xFF965400), fontSize: 12),
+                      style: TextStyle(
+                        color: FirewallColors.amber,
+                        fontSize: 12,
+                      ),
                     ),
                   ),
                 if (widget.session.error != null)
@@ -161,7 +165,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                   style: TextStyle(
                     letterSpacing: 1.6,
                     fontSize: 10,
-                    color: Color(0xFF61777F),
+                    color: FirewallColors.muted,
                   ),
                 ),
               ],

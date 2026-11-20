@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../models.dart';
+import 'theme.dart';
 
 String words(String label) => label.replaceAll('_', ' ').toLowerCase();
 String clockText(DateTime? value) {
@@ -20,18 +21,46 @@ Color statusColor(String value) {
       value == 'CRITICAL' ||
       value.contains('ERROR') ||
       value == 'HIGH') {
-    return const Color(0xFFB33434);
+    return FirewallColors.red;
   }
   if (value.contains('PENDING') ||
+      value.contains('REJECTED') ||
       value.contains('TIME') ||
       value == 'MEDIUM' ||
       value == 'EXECUTION_UNCONFIRMED') {
-    return const Color(0xFF965400);
+    return FirewallColors.amber;
   }
   if (value.contains('ALLOW') || value.contains('APPROVED') || value == 'LOW') {
-    return const Color(0xFF087F75);
+    return FirewallColors.green;
   }
-  return const Color(0xFF526B75);
+  return FirewallColors.muted;
+}
+
+IconData actionIcon(String action) => switch (action) {
+  'read_logs' => Icons.subject_outlined,
+  'spin_up_dev_vm' => Icons.dns_outlined,
+  'change_iam_permissions' => Icons.admin_panel_settings_outlined,
+  'delete_prod_db' => Icons.delete_forever_outlined,
+  'sql_read' => Icons.manage_search_outlined,
+  'sql_write' => Icons.edit_note_outlined,
+  'sql_destructive' => Icons.warning_amber_outlined,
+  _ => Icons.shield_outlined,
+};
+
+IconData statusIcon(String status) {
+  if (status == 'CRITICAL' || status == 'HIGH') {
+    return Icons.warning_amber_outlined;
+  }
+  if (status == 'MEDIUM') return Icons.priority_high;
+  if (status == 'LOW') return Icons.check_circle_outline;
+  if (status.contains('BLOCK') || status.contains('ERROR')) return Icons.block;
+  if (status.contains('REJECTED')) return Icons.cancel_outlined;
+  if (status.contains('PENDING')) return Icons.schedule;
+  if (status.contains('APPROVED') || status.contains('ALLOW')) {
+    return Icons.check_circle_outline;
+  }
+  if (status.contains('TIME')) return Icons.timer_off_outlined;
+  return Icons.circle_outlined;
 }
 
 class StatusPill extends StatelessWidget {
@@ -43,16 +72,26 @@ class StatusPill extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
       decoration: BoxDecoration(
-        color: color.withValues(alpha: .09),
-        borderRadius: BorderRadius.circular(8),
+        color: color.withValues(alpha: .14),
+        borderRadius: BorderRadius.circular(6),
       ),
-      child: Text(
-        words(text),
-        style: TextStyle(
-          color: color,
-          fontSize: 11,
-          fontWeight: FontWeight.w700,
-        ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(statusIcon(text), size: 12, color: color),
+          const SizedBox(width: 5),
+          Flexible(
+            child: Text(
+              words(text),
+              softWrap: true,
+              style: TextStyle(
+                color: color,
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -94,7 +133,7 @@ class EmptyPanel extends StatelessWidget {
       padding: const EdgeInsets.all(24),
       child: Column(
         children: [
-          Icon(icon, size: 32, color: const Color(0xFF087F75)),
+          Icon(icon, size: 32, color: FirewallColors.blue),
           const SizedBox(height: 12),
           Text(
             title,
@@ -104,7 +143,7 @@ class EmptyPanel extends StatelessWidget {
           Text(
             message,
             textAlign: TextAlign.center,
-            style: const TextStyle(color: Color(0xFF61777F), height: 1.5),
+            style: const TextStyle(color: FirewallColors.muted, height: 1.5),
           ),
         ],
       ),
@@ -122,7 +161,7 @@ class ActionTile extends StatelessWidget {
     padding: const EdgeInsets.only(bottom: 10),
     child: Card(
       child: InkWell(
-        borderRadius: BorderRadius.circular(20),
+        borderRadius: BorderRadius.circular(14),
         onTap: onTap,
         child: Padding(
           padding: const EdgeInsets.all(16),
@@ -131,6 +170,20 @@ class ActionTile extends StatelessWidget {
             children: [
               Row(
                 children: [
+                  Container(
+                    width: 38,
+                    height: 38,
+                    margin: const EdgeInsets.only(right: 12),
+                    decoration: BoxDecoration(
+                      color: FirewallColors.blue.withValues(alpha: .12),
+                      borderRadius: BorderRadius.circular(9),
+                    ),
+                    child: Icon(
+                      actionIcon(entry.action),
+                      color: FirewallColors.blue,
+                      size: 21,
+                    ),
+                  ),
                   Expanded(
                     child: Text(
                       words(entry.action),
@@ -152,7 +205,7 @@ class ActionTile extends StatelessWidget {
                 style: const TextStyle(
                   fontFamily: 'monospace',
                   fontSize: 12,
-                  color: Color(0xFF526B75),
+                  color: FirewallColors.muted,
                 ),
               ),
               const SizedBox(height: 12),
@@ -168,7 +221,7 @@ class ActionTile extends StatelessWidget {
                         : clockText(entry.timestamp),
                     style: const TextStyle(
                       fontSize: 12,
-                      color: Color(0xFF61777F),
+                      color: FirewallColors.muted,
                     ),
                   ),
                   Text(entry.agent, style: const TextStyle(fontSize: 12)),

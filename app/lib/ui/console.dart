@@ -4,6 +4,7 @@ import '../session.dart';
 import 'components.dart';
 import 'details.dart';
 import 'history.dart';
+import 'theme.dart';
 
 class ConsoleShell extends StatefulWidget {
   const ConsoleShell({super.key, required this.session});
@@ -43,7 +44,7 @@ class _ConsoleShellState extends State<ConsoleShell> {
       child: Scaffold(
         appBar: AppBar(
           leading: _selected == null
-              ? const Icon(Icons.shield_outlined, color: Color(0xFF087F75))
+              ? const Icon(Icons.shield_outlined, color: FirewallColors.blue)
               : BackButton(onPressed: () => setState(() => _selected = null)),
           title: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -105,24 +106,24 @@ class _ConsoleShellState extends State<ConsoleShell> {
                 onDestinationSelected: (index) => setState(() => _tab = index),
                 destinations: [
                   const NavigationDestination(
-                    icon: Icon(Icons.grid_view_outlined),
-                    selectedIcon: Icon(Icons.grid_view_rounded),
+                    icon: Icon(Icons.dashboard_outlined),
+                    selectedIcon: Icon(Icons.dashboard),
                     label: 'Overview',
                   ),
                   NavigationDestination(
                     icon: Badge(
                       isLabelVisible: session.pending.isNotEmpty,
                       label: Text('${session.pending.length}'),
-                      child: const Icon(Icons.rule_outlined),
+                      child: const Icon(Icons.fact_check_outlined),
                     ),
                     label: 'Approvals',
                   ),
                   const NavigationDestination(
-                    icon: Icon(Icons.history),
+                    icon: Icon(Icons.history_outlined),
                     label: 'History',
                   ),
                   const NavigationDestination(
-                    icon: Icon(Icons.tune),
+                    icon: Icon(Icons.settings_outlined),
                     label: 'Settings',
                   ),
                 ],
@@ -138,8 +139,14 @@ class _ConsoleShellState extends State<ConsoleShell> {
       margin: const EdgeInsets.fromLTRB(20, 8, 20, 12),
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: ready ? const Color(0xFFE1F2ED) : const Color(0xFFFFEFD9),
-        borderRadius: BorderRadius.circular(12),
+        color: (ready ? FirewallColors.green : FirewallColors.amber).withValues(
+          alpha: .12,
+        ),
+        border: Border.all(
+          color: (ready ? FirewallColors.green : FirewallColors.amber)
+              .withValues(alpha: .25),
+        ),
+        borderRadius: BorderRadius.circular(10),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -147,7 +154,7 @@ class _ConsoleShellState extends State<ConsoleShell> {
           Icon(
             ready ? Icons.wifi : Icons.wifi_off,
             size: 18,
-            color: ready ? const Color(0xFF087F75) : const Color(0xFF965400),
+            color: ready ? FirewallColors.green : FirewallColors.amber,
           ),
           const SizedBox(width: 8),
           Expanded(
@@ -184,13 +191,13 @@ class _ConsoleShellState extends State<ConsoleShell> {
             style: TextStyle(
               fontSize: 28,
               fontWeight: FontWeight.w800,
-              color: Color(0xFF142D34),
+              color: FirewallColors.text,
             ),
           ),
           const SizedBox(height: 6),
           const Text(
-            'Keep agent actions accountable, one decision at a time.',
-            style: TextStyle(color: Color(0xFF61777F), height: 1.4),
+            'Current requests and policy outcomes from the firewall.',
+            style: TextStyle(color: FirewallColors.muted, height: 1.4),
           ),
           const SizedBox(height: 20),
           Row(
@@ -200,7 +207,7 @@ class _ConsoleShellState extends State<ConsoleShell> {
                   'Awaiting review',
                   '${s.pending.length}',
                   Icons.rule,
-                  const Color(0xFF965400),
+                  FirewallColors.amber,
                 ),
               ),
               const SizedBox(width: 12),
@@ -209,7 +216,7 @@ class _ConsoleShellState extends State<ConsoleShell> {
                   'Recent actions',
                   '${actions.length}',
                   Icons.layers_outlined,
-                  const Color(0xFF142D34),
+                  FirewallColors.text,
                 ),
               ),
             ],
@@ -222,7 +229,7 @@ class _ConsoleShellState extends State<ConsoleShell> {
                   'Executed',
                   '$allowed',
                   Icons.check_circle_outline,
-                  const Color(0xFF087F75),
+                  FirewallColors.green,
                 ),
               ),
               const SizedBox(width: 12),
@@ -231,7 +238,7 @@ class _ConsoleShellState extends State<ConsoleShell> {
                   'Policy blocked',
                   '$blocked',
                   Icons.block,
-                  const Color(0xFFB33434),
+                  FirewallColors.red,
                 ),
               ),
             ],
@@ -241,7 +248,7 @@ class _ConsoleShellState extends State<ConsoleShell> {
             'Recent counts use unique requests within the latest 500 audit events. They are not lifetime totals.',
             style: TextStyle(
               fontSize: 11,
-              color: Color(0xFF61777F),
+              color: FirewallColors.muted,
               height: 1.5,
             ),
           ),
@@ -250,7 +257,7 @@ class _ConsoleShellState extends State<ConsoleShell> {
               padding: const EdgeInsets.only(top: 12),
               child: Text(
                 s.error!,
-                style: const TextStyle(color: Color(0xFFB33434)),
+                style: const TextStyle(color: FirewallColors.red),
               ),
             ),
           SectionTitle(
@@ -311,7 +318,7 @@ class _ConsoleShellState extends State<ConsoleShell> {
           const SizedBox(height: 8),
           Text(
             title,
-            style: const TextStyle(fontSize: 12, color: Color(0xFF61777F)),
+            style: const TextStyle(fontSize: 12, color: FirewallColors.muted),
           ),
         ],
       ),
@@ -331,7 +338,7 @@ class _ConsoleShellState extends State<ConsoleShell> {
         const SizedBox(height: 8),
         const Text(
           'Soonest expiry first. Open an action to inspect its full request. The server determines whether a review is still valid.',
-          style: TextStyle(color: Color(0xFF61777F), height: 1.5),
+          style: TextStyle(color: FirewallColors.muted, height: 1.5),
         ),
         const SizedBox(height: 20),
         if (s.pending.isEmpty)
@@ -365,7 +372,7 @@ class _ConsoleShellState extends State<ConsoleShell> {
             children: [
               const Text(
                 'Firewall server',
-                style: TextStyle(fontSize: 12, color: Color(0xFF61777F)),
+                style: TextStyle(fontSize: 12, color: FirewallColors.muted),
               ),
               const SizedBox(height: 6),
               SelectableText(
@@ -389,7 +396,7 @@ class _ConsoleShellState extends State<ConsoleShell> {
       const SectionTitle('Policy rulebook'),
       const Text(
         'Read-only rules from your server. Editing policy remains a reviewed repository change.',
-        style: TextStyle(color: Color(0xFF61777F), fontSize: 12),
+        style: TextStyle(color: FirewallColors.muted, fontSize: 12),
       ),
       const SizedBox(height: 12),
       for (final rule in (s.policy['rules'] as List? ?? []))
@@ -410,7 +417,7 @@ class _ConsoleShellState extends State<ConsoleShell> {
       const SectionTitle('Session privacy'),
       const Text(
         'Credentials and history are held in memory only. Disconnecting clears this session. Closing and reopening the app requires your token again. Background push notifications are not enabled.',
-        style: TextStyle(height: 1.5, color: Color(0xFF61777F)),
+        style: TextStyle(height: 1.5, color: FirewallColors.muted),
       ),
       const SizedBox(height: 20),
       FilledButton.tonalIcon(

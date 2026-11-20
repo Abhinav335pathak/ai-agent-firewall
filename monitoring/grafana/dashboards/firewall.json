@@ -1,55 +1,141 @@
 {
   "uid": "ai-firewall",
   "title": "AI Agent Firewall",
+  "description": "Operational view of firewall workflow events, policy evaluation latency, approvals and Prometheus scrape health.",
+  "tags": ["security", "ai-agent-firewall", "prometheus"],
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "5s",
-  "time": { "from": "now-15m", "to": "now" },
+  "time": { "from": "now-1h", "to": "now" },
+  "timezone": "browser",
+  "graphTooltip": 1,
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
   "panels": [
     {
       "id": 1,
       "type": "timeseries",
-      "title": "Decisions per minute",
-      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 0 },
+      "title": "Firewall workflow events / minute",
+      "description": "Counts emitted by the firewall at each lifecycle stage (for example PENDING_APPROVAL, EXECUTING, ALLOWED, BLOCKED). A single request can emit more than one event.",
+      "gridPos": { "h": 9, "w": 14, "x": 0, "y": 0 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineInterpolation": "smooth", "lineWidth": 2, "fillOpacity": 12, "showPoints": "never", "spanNulls": false },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
       "targets": [
-        {
-          "refId": "A",
-          "expr": "sum by (decision) (increase(firewall_decisions_total[1m]))",
-          "legendFormat": "{{decision}}"
-        }
+        { "refId": "A", "expr": "sum by (decision) (rate(firewall_decisions_total[5m])) * 60", "legendFormat": "{{decision}}", "range": true }
       ]
     },
     {
       "id": 2,
       "type": "timeseries",
-      "title": "Policy evaluation latency p95 (ms)",
-      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 0 },
+      "title": "Policy evaluation latency",
+      "description": "p50 and p95 time spent evaluating policy, in milliseconds. This excludes waiting for human approval and downstream database execution.",
+      "gridPos": { "h": 9, "w": 10, "x": 14, "y": 0 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "fieldConfig": { "defaults": { "unit": "ms" }, "overrides": [] },
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 8, "showPoints": "never" }, "unit": "ms", "min": 0 },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
       "targets": [
-        {
-          "refId": "A",
-          "expr": "histogram_quantile(0.95, sum(rate(firewall_policy_eval_seconds_bucket[5m])) by (le)) * 1000",
-          "legendFormat": "p95"
-        }
+        { "refId": "A", "expr": "histogram_quantile(0.50, sum by (le) (rate(firewall_policy_eval_seconds_bucket[5m]))) * 1000", "legendFormat": "p50", "range": true },
+        { "refId": "B", "expr": "histogram_quantile(0.95, sum by (le) (rate(firewall_policy_eval_seconds_bucket[5m]))) * 1000", "legendFormat": "p95", "range": true }
       ]
     },
     {
       "id": 3,
       "type": "stat",
-      "title": "Approvals waiting for a human",
-      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 9 },
+      "title": "Approvals waiting",
+      "description": "Current number of requests waiting for a human decision.",
+      "gridPos": { "h": 5, "w": 5, "x": 0, "y": 9 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "targets": [{ "refId": "A", "expr": "firewall_pending_approvals" }]
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "thresholds" }, "mappings": [], "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 1 }, { "color": "red", "value": 5 }] }, "unit": "short" },
+        "overrides": []
+      },
+      "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto" },
+      "targets": [{ "refId": "A", "expr": "firewall_pending_approvals", "legendFormat": "Pending", "range": true }]
     },
     {
       "id": 4,
       "type": "stat",
-      "title": "Actions blocked (total)",
-      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 9 },
+      "title": "Blocked events (selected range)",
+      "description": "Rate-derived count of BLOCKED lifecycle events during the selected dashboard time range.",
+      "gridPos": { "h": 5, "w": 5, "x": 5, "y": 9 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "targets": [{ "refId": "A", "expr": "sum(firewall_decisions_total{decision=\"BLOCKED\"})" }]
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "thresholds" }, "mappings": [], "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 1 }, { "color": "red", "value": 10 }] }, "unit": "short" },
+        "overrides": []
+      },
+      "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto" },
+      "targets": [{ "refId": "A", "expr": "sum(increase(firewall_decisions_total{decision=\"BLOCKED\"}[$__range]))", "legendFormat": "Blocked", "range": true }]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Firewall uptime",
+      "description": "Seconds since the firewall process started. A reset to a low value indicates a restart.",
+      "gridPos": { "h": 5, "w": 4, "x": 10, "y": 9 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "mappings": [], "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 60 }] }, "unit": "s" }, "overrides": [] },
+      "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto" },
+      "targets": [{ "refId": "A", "expr": "firewall_uptime_seconds", "legendFormat": "Uptime", "range": true }]
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Firewall scrape",
+      "description": "Prometheus target status: 1 means metrics were scraped successfully; 0 means the firewall target is unavailable or rejected the scrape.",
+      "gridPos": { "h": 5, "w": 5, "x": 14, "y": 9 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "thresholds" }, "mappings": [{ "options": { "0": { "text": "DOWN" }, "1": { "text": "UP" } }, "type": "value" }], "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] }, "unit": "none" },
+        "overrides": []
+      },
+      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto" },
+      "targets": [{ "refId": "A", "expr": "up{job=\"firewall-proxy\"}", "legendFormat": "Firewall", "range": true }]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Approvals requested / minute",
+      "description": "Human-review requests created by the firewall.",
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "bars", "lineWidth": 1, "fillOpacity": 35, "showPoints": "never" }, "unit": "ops" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "hidden", "placement": "bottom", "showLegend": false }, "tooltip": { "mode": "single" } },
+      "targets": [{ "refId": "A", "expr": "rate(firewall_approvals_requested_total[5m]) * 60", "legendFormat": "Approval requests", "range": true }]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Prometheus target health",
+      "description": "Scrape health of the firewall and Prometheus targets.",
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "always", "pointSize": 5 }, "min": 0, "max": 1, "unit": "none" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [{ "refId": "A", "expr": "up", "legendFormat": "{{job}}", "range": true }]
     }
-  ]
+  ],
+  "links": [],
+  "liveNow": false
 }

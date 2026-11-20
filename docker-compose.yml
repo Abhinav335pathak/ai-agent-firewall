@@ -1,5 +1,6 @@
 name: ai-agent-firewall
 
+
 x-defaults: &defaults
   restart: unless-stopped
   logging:
